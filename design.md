@@ -2,97 +2,201 @@
 
 ## 1. Executive Summary
 
-**Heimdall** is the centralized **Observability and Telemetry Platform** for the Yggdrasil ecosystem. It is designed as a "Platform-as-a-Product," offering self-service observability capabilities to other teams and services.
+**Heimdall** is the centralized **Observability and Telemetry Platform** for the Yggdrasil
+ecosystem. It provides metrics, logs, traces, and alerting via the Grafana LGTM stack
+(Loki, Grafana, Tempo, Prometheus) with optional Thanos for long-term metric retention.
 
-Ideally, Heimdall acts as the **vigilant guardian**: it sees everything (metrics, logs, traces) but relies on trusted partners for its data persistence and messaging needs.
-Specifically, it delegates robust, high-availability data infrastructure (Kafka, Redis/Valkey) to the **Mimir** project.
+Deployed as a **Tier 2 (Nidavellir)** component via ArgoCD, Heimdall uses Crossplane to
+offer self-service observability through a single Kubernetes Claim. It is intentionally
+positioned as a late-phase component — everything will eventually feed into it, but nothing
+requires it to provision.
 
 ## 2. Architecture Overview
 
-The architecture follows a strictly layered approach to separate **application logic** (Observability) from **data infrastructure** (Storage/Queues) and **control plane** (Orchestration).
+### 2.1 Core Stack
 
-### 2.1 Core Stack (The Application)
+Built on the Grafana observability ecosystem:
 
-The core of Heimdall is built upon the **Panoptes** stack configurations. It provides:
+*   **Metrics**: kube-prometheus-stack (Prometheus Operator + Grafana + AlertManager).
+*   **Logging**: Loki (with Alloy or Promtail for collection).
+*   **Tracing**: Tempo.
+*   **Long-term Metrics**: Thanos (optional — recommended for GKE, deferrable on homelab).
+*   **Visualization**: Grafana (bundled with kube-prometheus-stack).
 
-*   **Metrics**: Prometheus (via kube-prometheus-stack) & Thanos (Long-term storage).
-*   **Visualization**: Grafana.
-*   **Alerting**: AlertManager.
-*   **Logging**: Loki.
-*   **Tracing**: Jaeger.
+### 2.2 Object Storage Backend
 
-### 2.2 Data Layer (The Dependency)
+Loki, Tempo, and Thanos all require S3-compatible object storage for their data backends:
 
-Heimdall **does not** own the lifecycle of its heavy data components. Instead, it consumes them as services from the **Mimir** project.
+*   **Homelab**: Garage (deployed by Nordri, Tier 1).
+*   **GKE**: Google Cloud Storage (GCS).
 
-*   **Streaming/Queuing**: Uses **Kafka** (hosted by Mimir/Strimzi) for reliable metric and log ingestion pipelines.
-*   **Caching**: Uses **Redis/Valkey** (hosted by Mimir) for caching query results and task queues (e.g., Celery).
+The storage endpoint, bucket, and credentials are injected at deployment time via the
+Crossplane Composition.
 
-### 2.3 Orchestration (The Control Plane)
+### 2.3 Authentication (Progressive)
 
-**Crossplane** serves as the unifying API. It manages the detailed wiring between the Core Stack and the Data Layer, ensuring that secrets, endpoints, and configurations are injected securely at deployment time.
+Heimdall follows a progressive authentication strategy:
+
+1.  **Phase 1** (initial deployment): Grafana uses built-in admin credentials. No SSO.
+2.  **Phase 2** (after Keycloak is available): Grafana OIDC integration for single sign-on.
+
+Grafana supports OIDC natively via `grafana.ini` configuration — no sidecar proxy is
+required. The Crossplane Composition can conditionally patch OIDC settings when a
+Keycloak endpoint is provided in the Claim parameters.
+
+### 2.4 Orchestration
+
+**Crossplane** serves as the unifying API. A Composition pipeline deploys the Helm charts
+and wires object storage, Grafana data sources, and optional OIDC configuration.
 
 ## 3. Component Design
 
-The platform implementation leverages Crossplane's Composite Resource Definition (XRD) model to offer a clean API.
+The platform implementation leverages Crossplane's Composite Resource Definition (XRD)
+model to offer a clean API, consistent with Mimir's approach to data service provisioning.
 
-### 3.1 The API: `HeimdallTelemetryStack`
+### 3.1 The API: `HeimdallStack`
 
-Teams request observability via a high-level Claim: `HeimdallTelemetryStack`.
+Teams request observability via a high-level Claim.
 
-This abstraction hides the complexity of:
+*   **API Group**: `heimdall.siliconsaga.org`
+*   **Kind**: `HeimdallStack` (claim) / `XHeimdallStack` (composite)
+*   **Version**: `v1alpha1`
 
-*   Deploying Helm charts.
-*   Provisioning topics.
-*   configuring OIDC sidecars.
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `environment` | enum: homelab, gke | `homelab` | Target environment; controls storage backend and replica counts |
+| `thanosEnabled` | boolean | `false` | Enable Thanos for long-term metric storage |
+| `retentionDays` | integer | `15` | Log and trace retention period (days) |
+| `storageSize` | string | `"10Gi"` | PVC size for Prometheus local storage |
+| `objectStoreBucket` | string | `"heimdall"` | S3 bucket name for Loki, Tempo, and Thanos |
+| `oidcEnabled` | boolean | `false` | Enable Grafana OIDC (requires Keycloak endpoint) |
 
 ### 3.2 The Composition: Wiring It Together
 
-The Composition acts as the glue code. Its responsibilities are:
+The Composition uses `function-go-templating` to deploy and configure:
 
-1.  **Deployment**: Instantiates the Panoptes Helm Chart.
-2.  **Discovery**: Locates the Mimir-provisioned resources (Kafka Clusters, Redis Clusters).
-3.  **Binding**: Extracts connection details (Secrets, Hostnames) from Mimir resources.
-4.  **Injection**: Patches these details into the Panoptes Helm `values.yaml` via `Provider-Helm`.
+1.  **kube-prometheus-stack** (Helm): Prometheus, Grafana, AlertManager, default dashboards.
+2.  **Loki** (Helm): Log aggregation with S3 backend.
+3.  **Tempo** (Helm): Distributed tracing with S3 backend.
+4.  **Thanos** (Helm, conditional): Long-term metric storage with S3 backend.
 
-#### Secret Injection Pattern
+Each Helm release is wrapped in a `Provider-Helm` Release resource.
 
-Secure connection to Mimir services is handled via Crossplane `FromSecret` patches:
+#### Object Storage Wiring
 
-*   **Kafka**: The Composition finds the Strimzi User Secret (from Mimir) and injects the TLS certificates and Bootstrap Servers into the Panoptes configuration.
-*   **Redis**: The Composition finds the Redis Operator Secret (from Mimir) and injects the Host, Port, and Password.
+The Composition patches S3 endpoint, bucket name, and credentials into each component's
+Helm values. On homelab this points to Garage's S3 API; on GKE to a GCS bucket with
+HMAC credentials or Workload Identity.
 
-## 4. Service Consumption Models
+#### Grafana Data Sources
 
-Heimdall supports versatile consumption patterns thanks to its decoupled design:
+The Composition auto-configures Grafana data sources for Prometheus, Loki, and Tempo so
+that correlation between metrics, logs, and traces works out of the box. Exemplar links
+from Prometheus to Tempo are configured for trace-to-metric correlation.
+
+## 4. Service Consumption
 
 ### Scenario A: Full Platform Deployment
 
 *   **User**: Platform Admin or SRE Team.
-*   **Action**: Applies `Claim: HeimdallTelemetryStack`.
-*   **Result**: Deploys the full observability suite (Prometheus, Grafana, etc.) wired to the shared Kafka and Redis backend.
+*   **Action**: Applies `Claim: HeimdallStack`.
+*   **Result**: Full observability suite deployed and wired to object storage.
 
-### Scenario B: Shared Infrastructure Usage
+### Scenario B: Service-Level Monitoring
 
-*   **User**: "Demicracy" Team (Application Devs).
-*   **Action**: Applies `Claim: KafkaTopic` (referencing the Mimir Kafka cluster).
-*   **Result**: The team gets a dedicated, secure topic on the shared, high-availability Kafka cluster without needing to maintain their own Kafka infrastructure.
+*   **User**: Application team deploying a new service.
+*   **Action**: Adds standard Prometheus annotations or `ServiceMonitor` CRs to their
+    deployment.
+*   **Result**: Metrics automatically scraped by Prometheus; team creates Grafana dashboards
+    against the shared instance.
 
-### Scenario C: App-Specific Caching
+### Scenario C: Distributed Tracing Integration
 
-*   **User**: New Microservice Team.
-*   **Action**: Applies `Claim: RedisCache`.
-*   **Result**: Provisions a dedicated User/ACL on the shared Mimir Valkey cluster, providing a consistent caching layer without operational overhead.
+*   **User**: Microservice team.
+*   **Action**: Instruments their app with the OpenTelemetry SDK, points the OTLP exporter
+    to the Tempo endpoint (`tempo.heimdall.svc:4317`).
+*   **Result**: Traces visible in Grafana via the Tempo data source, correlated with logs
+    and metrics.
 
 ## 5. Technical Stack
 
-| Category | Component | Source/Manager | Purpose |
+| Category | Component | Source | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Control Plane** | Crossplane | Platform | Orchestration & API |
-| **Metrics** | Prometheus Operator | Heimdall | Metric Collection |
-| **Visualization** | Grafana | Heimdall | Dashboards |
-| **Logging** | Loki | Heimdall | Log Aggregation |
-| **Tracing** | Jaeger | Heimdall | Distributed Tracing |
-| **Streaming** | **Kafka** | **Mimir** | Data Pipeline Backbone |
-| **Caching** | **Valkey** (Redis) | **Mimir** | High-perf Caching |
-| **Storage** | MinIO / Garage | Infrastructure | Object Storage (S3) |
+| **Control Plane** | Crossplane | Nordri (Tier 1) | Orchestration & API |
+| **Metrics** | kube-prometheus-stack | Heimdall | Prometheus + Grafana + AlertManager |
+| **Logging** | Loki | Heimdall | Log aggregation |
+| **Tracing** | Tempo | Heimdall | Distributed tracing (OTLP) |
+| **Long-term Storage** | Thanos | Heimdall (optional) | Metric retention beyond Prometheus |
+| **Object Storage** | Garage / GCS | Nordri / Cloud | S3 backend for Loki, Tempo, Thanos |
+
+## 6. Deployment
+
+### 6.1 Namespace
+
+All Heimdall resources deploy to the `heimdall` namespace.
+
+### 6.2 ArgoCD Application
+
+Heimdall is deployed as a Nidavellir app-of-apps component via `heimdall-app.yaml` in
+`nidavellir/apps/`.
+
+*   **Sync wave**: `10` (after Vegvisir at wave 5; after Mimir when it is added).
+*   **Source**: Internal Gitea during bootstrap; swap to GitHub when stable.
+*   **Path**: `heimdall/crossplane/` (XRDs, Compositions, and the platform Claim).
+
+### 6.3 Bootstrap Dependencies
+
+| Dependency | Source | Required? |
+| :--- | :--- | :--- |
+| Crossplane + Provider-Helm + Provider-Kubernetes | Nordri (Tier 1) | Yes |
+| `function-go-templating` + `function-auto-ready` | Nordri (Tier 1) | Yes |
+| Object storage (Garage) | Nordri (Tier 1, homelab only) | Yes (homelab) |
+| Keycloak | Nidavellir (Tier 2) | No (progressive OIDC) |
+
+Heimdall has **no hard dependency on Mimir**. It can deploy independently once Crossplane
+and object storage are available.
+
+### 6.4 Environment Differences
+
+| Aspect | Homelab (k3s) | GKE |
+| :--- | :--- | :--- |
+| Object storage | Garage S3 | GCS |
+| Storage class | `local-path` / Longhorn | `standard-rwo` |
+| Prometheus replicas | 1 | 2 |
+| Thanos | Defer initially | Recommended |
+| Loki mode | SingleBinary (monolithic) | SimpleScalable or distributed |
+| Ingress | Traefik (k3s built-in) | Traefik (Nordri-installed) |
+
+## 7. Testing Strategy
+
+Heimdall uses **kuttl** for Kubernetes-native e2e testing, consistent with Mimir and
+Vegvisir.
+
+### Planned Test Cases
+
+| Test | Validates |
+| :--- | :--- |
+| `stack-deploys` | `HeimdallStack` claim reaches `Ready` state |
+| `grafana-reachable` | Grafana UI responds on expected endpoint |
+| `prometheus-targets` | Prometheus has active scrape targets |
+| `loki-ingestion` | Logs are queryable via the Loki API |
+| `tempo-traces` | Traces are queryable via the Tempo API (stretch goal) |
+
+## 8. Resource Estimates
+
+Baseline homelab deployment (single replica, no Thanos):
+
+| Component | CPU Request | Memory Request |
+| :--- | :--- | :--- |
+| Prometheus | 250m | 512Mi |
+| Grafana | 100m | 128Mi |
+| AlertManager | 50m | 64Mi |
+| Loki (monolithic) | 250m | 256Mi |
+| Tempo | 250m | 256Mi |
+| Alloy / Promtail | 100m | 128Mi |
+| **Total** | **~1000m** | **~1.3Gi** |
+
+These are starting points for low-volume usage. Node pool assignment or resource limit
+increases can be applied as volume grows.
