@@ -1,0 +1,13 @@
+apiVersion: heimdall.siliconsaga.org/v1alpha1
+kind: HeimdallStack
+metadata:
+  name: heimdall
+  namespace: heimdall
+spec:
+  parameters:
+    environment: homelab
+    thanosEnabled: false
+    retentionDays: 15
+    storageSize: "10Gi"
+    lokiStorageSize: "5Gi"
+    tempoStorageSize: "5Gi"

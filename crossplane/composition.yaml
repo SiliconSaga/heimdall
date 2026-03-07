@@ -1,0 +1,226 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xheimdallstack-lgtm
+  labels:
+    provider: grafana-lgtm
+spec:
+  mode: Pipeline
+  compositeTypeRef:
+    apiVersion: heimdall.siliconsaga.org/v1alpha1
+    kind: XHeimdallStack
+  pipeline:
+
+  # ──────────────────────────────────────────────────────────
+  # Step 1: kube-prometheus-stack (Prometheus + Grafana + AlertManager)
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-kube-prometheus-stack
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}-kube-prometheus
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: kube-prometheus-stack
+          spec:
+            forProvider:
+              chart:
+                name: kube-prometheus-stack
+                repository: https://prometheus-community.github.io/helm-charts
+                version: "72.3.0"
+              namespace: heimdall
+              values:
+                prometheus:
+                  prometheusSpec:
+                    {{- if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}
+                    replicas: 2
+                    {{- else }}
+                    replicas: 1
+                    {{- end }}
+                    retention: {{ .observed.composite.resource.spec.parameters.retentionDays | default 15 }}d
+                    storageSpec:
+                      volumeClaimTemplate:
+                        spec:
+                          accessModes: ["ReadWriteOnce"]
+                          resources:
+                            requests:
+                              storage: {{ .observed.composite.resource.spec.parameters.storageSize | default "10Gi" }}
+                    resources:
+                      requests:
+                        cpu: 250m
+                        memory: 512Mi
+                      limits:
+                        cpu: "1"
+                        memory: 2Gi
+                grafana:
+                  enabled: true
+                  adminPassword: admin
+                  sidecar:
+                    datasources:
+                      enabled: true
+                  additionalDataSources:
+                  - name: Loki
+                    type: loki
+                    url: http://{{ .observed.composite.resource.metadata.name }}-loki.heimdall.svc:3100
+                    access: proxy
+                    jsonData:
+                      derivedFields:
+                      - datasourceUid: tempo
+                        matcherRegex: "traceID=(\\w+)"
+                        name: TraceID
+                        url: "$${__value.raw}"
+                  - name: Tempo
+                    type: tempo
+                    uid: tempo
+                    url: http://{{ .observed.composite.resource.metadata.name }}-tempo.heimdall.svc:3100
+                    access: proxy
+                    jsonData:
+                      tracesToLogs:
+                        datasourceUid: loki
+                        filterByTraceID: true
+                      serviceMap:
+                        datasourceUid: prometheus
+                  resources:
+                    requests:
+                      cpu: 100m
+                      memory: 128Mi
+                    limits:
+                      cpu: 500m
+                      memory: 512Mi
+                alertmanager:
+                  alertmanagerSpec:
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 250m
+                        memory: 256Mi
+
+  # ──────────────────────────────────────────────────────────
+  # Step 2: Loki (Log Aggregation)
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-loki
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}-loki
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: loki
+          spec:
+            forProvider:
+              chart:
+                name: loki
+                repository: https://grafana.github.io/helm-charts
+                version: "6.29.0"
+              namespace: heimdall
+              values:
+                deploymentMode: SingleBinary
+                loki:
+                  auth_enabled: false
+                  commonConfig:
+                    replication_factor: 1
+                  storage:
+                    type: filesystem
+                  limits_config:
+                    retention_period: {{ .observed.composite.resource.spec.parameters.retentionDays | default 15 }}d
+                  compactor:
+                    retention_enabled: true
+                singleBinary:
+                  replicas: 1
+                  persistence:
+                    enabled: true
+                    size: {{ .observed.composite.resource.spec.parameters.lokiStorageSize | default "5Gi" }}
+                  resources:
+                    requests:
+                      cpu: 250m
+                      memory: 256Mi
+                    limits:
+                      cpu: "1"
+                      memory: 1Gi
+                # Disable components not needed in SingleBinary mode
+                read:
+                  replicas: 0
+                write:
+                  replicas: 0
+                backend:
+                  replicas: 0
+                gateway:
+                  enabled: false
+                chunksCache:
+                  enabled: false
+                resultsCache:
+                  enabled: false
+
+  # ──────────────────────────────────────────────────────────
+  # Step 3: Tempo (Distributed Tracing)
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-tempo
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}-tempo
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: tempo
+          spec:
+            forProvider:
+              chart:
+                name: tempo
+                repository: https://grafana.github.io/helm-charts
+                version: "1.16.0"
+              namespace: heimdall
+              values:
+                tempo:
+                  retention: {{ mul (.observed.composite.resource.spec.parameters.retentionDays | default 15) 24 }}h
+                  receivers:
+                    otlp:
+                      protocols:
+                        grpc:
+                          endpoint: "0.0.0.0:4317"
+                        http:
+                          endpoint: "0.0.0.0:4318"
+                  storage:
+                    trace:
+                      backend: local
+                      local:
+                        path: /var/tempo/traces
+                persistence:
+                  enabled: true
+                  size: {{ .observed.composite.resource.spec.parameters.tempoStorageSize | default "5Gi" }}
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+
+  # ──────────────────────────────────────────────────────────
+  # Step 4: Auto-ready
+  # ──────────────────────────────────────────────────────────
+  - step: auto-ready
+    functionRef:
+      name: function-auto-ready

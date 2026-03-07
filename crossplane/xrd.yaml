@@ -1,0 +1,87 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xheimdallstacks.heimdall.siliconsaga.org
+spec:
+  group: heimdall.siliconsaga.org
+  names:
+    kind: XHeimdallStack
+    plural: xheimdallstacks
+  claimNames:
+    kind: HeimdallStack
+    plural: heimdallstacks
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              parameters:
+                type: object
+                properties:
+                  environment:
+                    type: string
+                    default: "homelab"
+                    enum: ["homelab", "gke"]
+                    description: "Target environment; controls storage backend and replica counts"
+                  thanosEnabled:
+                    type: boolean
+                    default: false
+                    description: "Enable Thanos for long-term metric storage"
+                  retentionDays:
+                    type: integer
+                    default: 15
+                    minimum: 1
+                    description: "Log and trace retention period (days)"
+                  storageSize:
+                    type: string
+                    default: "10Gi"
+                    description: "PVC size for Prometheus local storage"
+                  lokiStorageSize:
+                    type: string
+                    default: "5Gi"
+                    description: "PVC size for Loki data"
+                  tempoStorageSize:
+                    type: string
+                    default: "5Gi"
+                    description: "PVC size for Tempo data"
+                required:
+                - environment
+            required:
+            - parameters
+          status:
+            type: object
+            properties:
+              grafanaEndpoint:
+                type: string
+                description: "Grafana UI endpoint"
+              prometheusEndpoint:
+                type: string
+                description: "Prometheus query endpoint"
+              lokiEndpoint:
+                type: string
+                description: "Loki push/query endpoint"
+              tempoEndpoint:
+                type: string
+                description: "Tempo OTLP endpoint"
+    additionalPrinterColumns:
+    - name: ENV
+      type: string
+      jsonPath: .spec.parameters.environment
+    - name: THANOS
+      type: boolean
+      jsonPath: .spec.parameters.thanosEnabled
+    - name: RETENTION
+      type: integer
+      jsonPath: .spec.parameters.retentionDays
+    - name: READY
+      type: string
+      jsonPath: .status.conditions[?(@.type=='Ready')].status
+    - name: SYNCED
+      type: string
+      jsonPath: .status.conditions[?(@.type=='Synced')].status
