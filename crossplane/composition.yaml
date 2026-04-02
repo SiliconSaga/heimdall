@@ -34,7 +34,7 @@ spec:
               chart:
                 name: kube-prometheus-stack
                 repository: https://prometheus-community.github.io/helm-charts
-                version: "72.3.0"
+                version: "82.16.0"
               namespace: heimdall
               values:
                 prometheus:
@@ -128,7 +128,7 @@ spec:
               chart:
                 name: loki
                 repository: https://grafana.github.io/helm-charts
-                version: "6.29.0"
+                version: "6.55.0"
               namespace: heimdall
               values:
                 deploymentMode: SingleBinary
@@ -192,7 +192,7 @@ spec:
               chart:
                 name: tempo
                 repository: https://grafana.github.io/helm-charts
-                version: "1.16.0"
+                version: "1.24.4"
               namespace: heimdall
               values:
                 tempo:
