@@ -48,6 +48,7 @@ spec:
                     storageSpec:
                       volumeClaimTemplate:
                         spec:
+                          storageClassName: local-path
                           accessModes: ["ReadWriteOnce"]
                           resources:
                             requests:
@@ -145,6 +146,7 @@ spec:
                   replicas: 1
                   persistence:
                     enabled: true
+                    storageClass: local-path
                     size: {{ .observed.composite.resource.spec.parameters.lokiStorageSize | default "5Gi" }}
                   resources:
                     requests:
@@ -209,6 +211,7 @@ spec:
                         path: /var/tempo/traces
                 persistence:
                   enabled: true
+                  storageClassName: local-path
                   size: {{ .observed.composite.resource.spec.parameters.tempoStorageSize | default "5Gi" }}
                 resources:
                   requests:
