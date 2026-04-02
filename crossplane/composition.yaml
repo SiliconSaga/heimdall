@@ -151,6 +151,7 @@ spec:
                     retention_period: {{ .observed.composite.resource.spec.parameters.retentionDays | default 15 }}d
                   compactor:
                     retention_enabled: true
+                    delete_request_store: filesystem
                 singleBinary:
                   replicas: 1
                   persistence:
