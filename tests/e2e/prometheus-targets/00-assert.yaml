@@ -1,0 +1,33 @@
+# Assert Prometheus has active scrape targets
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      # Find the Prometheus pod
+      PROM_POD=$(kubectl get pods -n heimdall -l app.kubernetes.io/name=prometheus \
+        -o jsonpath='{.items[0].metadata.name}')
+
+      if [ -z "$PROM_POD" ]; then
+        echo "FAIL: No Prometheus pod found"
+        exit 1
+      fi
+
+      echo "Found Prometheus pod: $PROM_POD"
+
+      # Query targets API
+      TARGETS=$(kubectl exec -n heimdall "$PROM_POD" -c prometheus -- \
+        wget -qO- http://localhost:9090/api/v1/targets 2>/dev/null)
+
+      # Count active (up) targets
+      UP_COUNT=$(echo "$TARGETS" | grep -o '"health":"up"' | wc -l)
+
+      echo "Active scrape targets: $UP_COUNT"
+
+      if [ "$UP_COUNT" -gt 0 ]; then
+        echo "PASS: Prometheus has $UP_COUNT active targets"
+      else
+        echo "FAIL: No active scrape targets"
+        exit 1
+      fi

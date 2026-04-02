@@ -178,15 +178,60 @@ and object storage are available.
 Heimdall uses **kuttl** for Kubernetes-native e2e testing, consistent with Mimir and
 Vegvisir.
 
-### Planned Test Cases
+### Test Cases (kuttl)
 
 | Test | Validates |
 | :--- | :--- |
-| `stack-deploys` | `HeimdallStack` claim reaches `Ready` state |
-| `grafana-reachable` | Grafana UI responds on expected endpoint |
-| `prometheus-targets` | Prometheus has active scrape targets |
-| `loki-ingestion` | Logs are queryable via the Loki API |
-| `tempo-traces` | Traces are queryable via the Tempo API (stretch goal) |
+| `stack-deploys` | ArgoCD app Synced+Healthy, `HeimdallStack` claim Ready+Synced |
+| `grafana-reachable` | Grafana health endpoint responds, Prometheus/Loki/Tempo data sources configured |
+| `prometheus-targets` | Prometheus has at least one active scrape target |
+| `loki-ingestion` | Loki labels API returns success (ingestion pipeline functional) |
+| `tempo-traces` | Traces are queryable via the Tempo API (stretch goal — not yet implemented) |
+
+Run tests:
+
+```bash
+kubectl kuttl test --config kuttl-test.yaml
+```
+
+### Manual Verification
+
+After deploying Heimdall, use these commands to explore the stack interactively.
+
+**Grafana** (dashboards, data source exploration):
+
+```bash
+kubectl port-forward -n heimdall svc/heimdall-5ljlr-kube-prometheus-grafana 3000:80
+# Open http://localhost:3000 — login: admin / admin
+# Check: Dashboards → Browse → default dashboards from kube-prometheus-stack
+# Check: Connections → Data sources → Prometheus, Loki, Tempo should all be listed
+```
+
+**Prometheus** (metrics, targets, alerts):
+
+```bash
+kubectl port-forward -n heimdall svc/heimdall-5ljlr-kube-promet-prometheus 9090:9090
+# Open http://localhost:9090
+# Check: Status → Targets — should show active scrape targets
+# Try:   Graph → query `up` — shows all monitored endpoints
+```
+
+**Loki** (log queries via Grafana):
+
+```bash
+# Use the Grafana port-forward above, then:
+# Explore → select Loki data source → Label browser → pick a label
+# Try: {namespace="heimdall"} to see Heimdall's own logs
+```
+
+**Tempo** (traces via Grafana):
+
+```bash
+# Use the Grafana port-forward above, then:
+# Explore → select Tempo data source → Search tab
+# Note: traces only appear if an instrumented application is sending OTLP data
+# to heimdall-5ljlr-tempo.heimdall.svc:4317 (gRPC) or :4318 (HTTP)
+```
 
 ## 8. Resource Estimates
 

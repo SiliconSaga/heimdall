@@ -80,7 +80,7 @@ spec:
                   - name: Tempo
                     type: tempo
                     uid: tempo
-                    url: http://{{ .observed.composite.resource.metadata.name }}-tempo.heimdall.svc:3100
+                    url: http://{{ .observed.composite.resource.metadata.name }}-tempo.heimdall.svc:3200
                     access: proxy
                     jsonData:
                       tracesToLogs:
