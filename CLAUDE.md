@@ -22,5 +22,10 @@ Heimdall has no hard dependency on Mimir (no Kafka or Redis needed).
 
 ## Status
 
-Planned. No Crossplane resources, manifests, or ArgoCD Application yet.
-`heimdall-app.yaml` is a TODO in `nidavellir/apps/kustomization.yaml`.
+Phase 1 (homelab, filesystem storage, no SSO). Crossplane resources exist:
+- `crossplane/xrd.yaml` — `HeimdallStack` v1alpha1 XRD
+- `crossplane/composition.yaml` — Pipeline composition (kube-prometheus-stack, Loki, Tempo)
+- `crossplane/claim.yaml` — Homelab claim with defaults
+
+`heimdall-app.yaml` exists in `nidavellir/apps/` but is commented out in
+`kustomization.yaml` — uncomment to deploy.
