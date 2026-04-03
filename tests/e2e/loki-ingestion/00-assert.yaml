@@ -5,34 +5,45 @@ commands:
   - script: |
       set -e
 
-      # Find the Loki pod
-      LOKI_POD=$(kubectl get pods -n heimdall -l app.kubernetes.io/name=loki \
+      # Loki's container image has no wget/curl, so we use a one-shot pod
+      # to query the Loki API from inside the cluster.
+      LOKI_SVC=$(kubectl get svc -n heimdall -l app.kubernetes.io/name=loki \
         -o jsonpath='{.items[0].metadata.name}')
 
-      if [ -z "$LOKI_POD" ]; then
-        echo "FAIL: No Loki pod found"
+      if [ -z "$LOKI_SVC" ]; then
+        echo "FAIL: No Loki service found"
         exit 1
       fi
 
-      echo "Found Loki pod: $LOKI_POD"
+      echo "Found Loki service: $LOKI_SVC"
 
-      # Query Loki for any labels (proves ingestion pipeline is working)
-      LABELS=$(kubectl exec -n heimdall "$LOKI_POD" -c loki -- \
-        wget -qO- 'http://localhost:3100/loki/api/v1/labels' 2>/dev/null)
+      # Run a one-shot pod to query Loki labels API
+      kubectl run loki-test-client --namespace heimdall \
+        --image=curlimages/curl:latest --restart=Never \
+        --command -- curl -sf "http://${LOKI_SVC}.heimdall.svc:3100/loki/api/v1/labels"
 
-      echo "Loki labels response: $LABELS"
-
-      if echo "$LABELS" | grep -q '"status":"success"'; then
-        # Count labels returned
-        LABEL_COUNT=$(echo "$LABELS" | grep -o '"' | wc -l)
-        if [ "$LABEL_COUNT" -gt 4 ]; then
-          echo "PASS: Loki has ingested data with labels"
-        else
-          echo "WARN: Loki API responds but may not have ingested logs yet"
-          echo "This is expected on a fresh deployment — loki-canary needs time"
-          # Still pass — the API is reachable, which is the core assertion
-          echo "PASS: Loki API is functional"
+      # Wait for completion
+      for i in $(seq 1 30); do
+        PHASE=$(kubectl get pod loki-test-client -n heimdall -o jsonpath='{.status.phase}' 2>/dev/null)
+        if [ "$PHASE" = "Succeeded" ]; then
+          echo "Query succeeded."
+          break
         fi
+        if [ "$PHASE" = "Failed" ]; then
+          echo "FAIL: Loki query pod failed"
+          kubectl logs loki-test-client -n heimdall
+          kubectl delete pod loki-test-client -n heimdall --ignore-not-found
+          exit 1
+        fi
+        sleep 2
+      done
+
+      RESULT=$(kubectl logs loki-test-client -n heimdall)
+      echo "Loki labels response: $RESULT"
+      kubectl delete pod loki-test-client -n heimdall --ignore-not-found
+
+      if echo "$RESULT" | grep -q '"status":"success"'; then
+        echo "PASS: Loki API is functional and returning labels"
       else
         echo "FAIL: Loki labels query did not return success"
         exit 1
