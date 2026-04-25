@@ -48,7 +48,7 @@ spec:
                     storageSpec:
                       volumeClaimTemplate:
                         spec:
-                          storageClassName: local-path
+                          storageClassName: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
                           accessModes: ["ReadWriteOnce"]
                           resources:
                             requests:
@@ -156,7 +156,7 @@ spec:
                   replicas: 1
                   persistence:
                     enabled: true
-                    storageClass: local-path
+                    storageClass: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
                     size: {{ .observed.composite.resource.spec.parameters.lokiStorageSize | default "5Gi" }}
                   resources:
                     requests:
@@ -221,7 +221,7 @@ spec:
                         path: /var/tempo/traces
                 persistence:
                   enabled: true
-                  storageClassName: local-path
+                  storageClassName: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
                   size: {{ .observed.composite.resource.spec.parameters.tempoStorageSize | default "5Gi" }}
                 resources:
                   requests:
@@ -262,7 +262,7 @@ spec:
                     - web
                     - websecure
                   routes:
-                    - match: Host(`grafana.localhost`)
+                    - match: Host(`grafana.{{ .observed.composite.resource.spec.parameters.domain | default "localhost" }}`)
                       kind: Rule
                       services:
                         - name: {{ .observed.composite.resource.metadata.name }}-kube-prometheus-grafana
@@ -286,7 +286,7 @@ spec:
                   entryPoints:
                     - web
                   routes:
-                    - match: Host(`prometheus.localhost`)
+                    - match: Host(`prometheus.{{ .observed.composite.resource.spec.parameters.domain | default "localhost" }}`)
                       kind: Rule
                       services:
                         - name: {{ .observed.composite.resource.metadata.name }}-kube-promet-prometheus
