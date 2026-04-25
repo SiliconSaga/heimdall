@@ -15,9 +15,16 @@ echo "Preparing kubeconfig for Docker..."
 TEMP_KUBECONFIG=$(mktemp)
 kubectl config view --minify --flatten \
   | sed 's/127\.0\.0\.1/host.docker.internal/g' \
+  | sed 's/0\.0\.0\.0/host.docker.internal/g' \
+  | sed 's/\[::1\]/host.docker.internal/g' \
   | sed 's/localhost/host.docker.internal/g' \
   | sed 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/' \
   > "$TEMP_KUBECONFIG"
+
+# Ensure insecure-skip-tls-verify is present even if no certificate-authority-data existed
+if ! grep -q 'insecure-skip-tls-verify' "$TEMP_KUBECONFIG"; then
+  sed -i '/server:/a\    insecure-skip-tls-verify: true' "$TEMP_KUBECONFIG"
+fi
 
 cleanup() { rm -f "$TEMP_KUBECONFIG"; }
 trap cleanup EXIT
@@ -36,8 +43,9 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   --add-host host.docker.internal:host-gateway \
   --entrypoint /bin/sh \
   kudobuilder/kuttl:latest \
-  -c "mkdir -p /tmp/work \
+  -c 'mkdir -p /tmp/work \
     && cp /workspace/kuttl-test.yaml /tmp/work/ \
     && ln -s /workspace/tests /tmp/work/tests \
     && cd /tmp/work \
-    && kubectl-kuttl test --config kuttl-test.yaml $*"
+    && kubectl-kuttl test --config kuttl-test.yaml "$@"' \
+  sh "$@"
