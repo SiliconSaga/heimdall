@@ -196,42 +196,34 @@ kubectl kuttl test --config kuttl-test.yaml
 
 ### Manual Verification
 
-After deploying Heimdall, use these commands to explore the stack interactively.
+After deploying Heimdall, the Crossplane composition creates Traefik IngressRoutes
+for Grafana and Prometheus. On homelab (k3d/k3s), these use `*.localhost` hostnames
+which resolve to 127.0.0.1 automatically.
 
-**Grafana** (dashboards, data source exploration):
+**Grafana** — http://grafana.localhost
 
-```bash
-kubectl port-forward -n heimdall svc/heimdall-5ljlr-kube-prometheus-grafana 3000:80
-# Open http://localhost:3000 — login: admin / admin
-# Check: Dashboards → Browse → default dashboards from kube-prometheus-stack
-# Check: Connections → Data sources → Prometheus, Loki, Tempo should all be listed
-```
+*   Login: `admin` / `admin`
+*   Dashboards → Browse → default dashboards from kube-prometheus-stack
+*   Connections → Data sources → Prometheus, Loki, Tempo should all be listed
+*   Explore → Loki data source → try `{namespace="heimdall"}` for Heimdall's own logs
+*   Explore → Tempo data source → Search tab (traces require an instrumented app
+    sending OTLP to `heimdall-<id>-tempo.heimdall.svc:4317`)
 
-**Prometheus** (metrics, targets, alerts):
+**Prometheus** — http://prometheus.localhost
 
-```bash
-kubectl port-forward -n heimdall svc/heimdall-5ljlr-kube-promet-prometheus 9090:9090
-# Open http://localhost:9090
-# Check: Status → Targets — should show active scrape targets
-# Try:   Graph → query `up` — shows all monitored endpoints
-```
+*   Status → Targets — should show active scrape targets
+*   Graph → query `up` — shows all monitored endpoints
 
-**Loki** (log queries via Grafana):
+**Port-forward fallback** (if ingress is unavailable):
 
 ```bash
-# Use the Grafana port-forward above, then:
-# Explore → select Loki data source → Label browser → pick a label
-# Try: {namespace="heimdall"} to see Heimdall's own logs
+kubectl port-forward -n heimdall svc/heimdall-<id>-kube-prometheus-grafana 3000:80
+kubectl port-forward -n heimdall svc/heimdall-<id>-kube-promet-prometheus 9090:9090
 ```
 
-**Tempo** (traces via Grafana):
-
-```bash
-# Use the Grafana port-forward above, then:
-# Explore → select Tempo data source → Search tab
-# Note: traces only appear if an instrumented application is sending OTLP data
-# to heimdall-5ljlr-tempo.heimdall.svc:4317 (gRPC) or :4318 (HTTP)
-```
+**GKE:** Replace `*.localhost` with your domain (e.g. `grafana.example.com`).
+The IngressRoute host matching in the composition will need to be parameterized
+via the Claim when GKE support is implemented.
 
 ## 8. Resource Estimates
 
