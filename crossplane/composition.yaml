@@ -34,7 +34,7 @@ spec:
               chart:
                 name: kube-prometheus-stack
                 repository: https://prometheus-community.github.io/helm-charts
-                version: "72.3.0"
+                version: "82.16.0"
               namespace: heimdall
               values:
                 prometheus:
@@ -48,6 +48,7 @@ spec:
                     storageSpec:
                       volumeClaimTemplate:
                         spec:
+                          storageClassName: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
                           accessModes: ["ReadWriteOnce"]
                           resources:
                             requests:
@@ -79,7 +80,7 @@ spec:
                   - name: Tempo
                     type: tempo
                     uid: tempo
-                    url: http://{{ .observed.composite.resource.metadata.name }}-tempo.heimdall.svc:3100
+                    url: http://{{ .observed.composite.resource.metadata.name }}-tempo.heimdall.svc:3200
                     access: proxy
                     jsonData:
                       tracesToLogs:
@@ -127,7 +128,7 @@ spec:
               chart:
                 name: loki
                 repository: https://grafana.github.io/helm-charts
-                version: "6.29.0"
+                version: "6.55.0"
               namespace: heimdall
               values:
                 deploymentMode: SingleBinary
@@ -135,16 +136,27 @@ spec:
                   auth_enabled: false
                   commonConfig:
                     replication_factor: 1
+                  schemaConfig:
+                    configs:
+                    - from: "2024-04-01"
+                      store: tsdb
+                      object_store: filesystem
+                      schema: v13
+                      index:
+                        prefix: index_
+                        period: 24h
                   storage:
                     type: filesystem
                   limits_config:
                     retention_period: {{ .observed.composite.resource.spec.parameters.retentionDays | default 15 }}d
                   compactor:
                     retention_enabled: true
+                    delete_request_store: filesystem
                 singleBinary:
                   replicas: 1
                   persistence:
                     enabled: true
+                    storageClass: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
                     size: {{ .observed.composite.resource.spec.parameters.lokiStorageSize | default "5Gi" }}
                   resources:
                     requests:
@@ -190,7 +202,7 @@ spec:
               chart:
                 name: tempo
                 repository: https://grafana.github.io/helm-charts
-                version: "1.16.0"
+                version: "1.24.4"
               namespace: heimdall
               values:
                 tempo:
@@ -209,6 +221,7 @@ spec:
                         path: /var/tempo/traces
                 persistence:
                   enabled: true
+                  storageClassName: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
                   size: {{ .observed.composite.resource.spec.parameters.tempoStorageSize | default "5Gi" }}
                 resources:
                   requests:
@@ -219,7 +232,68 @@ spec:
                     memory: 1Gi
 
   # ──────────────────────────────────────────────────────────
-  # Step 4: Auto-ready
+  # Step 4: Ingress Routes (Traefik IngressRoute)
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-ingress-routes
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}-grafana-ingress
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: grafana-ingress
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: traefik.io/v1alpha1
+                kind: IngressRoute
+                metadata:
+                  name: grafana
+                  namespace: heimdall
+                spec:
+                  entryPoints:
+                    - web
+                    - websecure
+                  routes:
+                    - match: Host(`grafana.{{ .observed.composite.resource.spec.parameters.domain | default "localhost" }}`)
+                      kind: Rule
+                      services:
+                        - name: {{ .observed.composite.resource.metadata.name }}-kube-prometheus-grafana
+                          port: 80
+          ---
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}-prometheus-ingress
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: prometheus-ingress
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: traefik.io/v1alpha1
+                kind: IngressRoute
+                metadata:
+                  name: prometheus
+                  namespace: heimdall
+                spec:
+                  entryPoints:
+                    - web
+                  routes:
+                    - match: Host(`prometheus.{{ .observed.composite.resource.spec.parameters.domain | default "localhost" }}`)
+                      kind: Rule
+                      services:
+                        - name: {{ .observed.composite.resource.metadata.name }}-kube-promet-prometheus
+                          port: 9090
+
+  # ──────────────────────────────────────────────────────────
+  # Step 5: Auto-ready
   # ──────────────────────────────────────────────────────────
   - step: auto-ready
     functionRef:

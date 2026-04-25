@@ -50,6 +50,10 @@ spec:
                     type: string
                     default: "5Gi"
                     description: "PVC size for Tempo data"
+                  domain:
+                    type: string
+                    default: "localhost"
+                    description: "Base domain for ingress routes (e.g. localhost, example.com)"
                 required:
                 - environment
             required:

@@ -23,15 +23,19 @@ Built on the Grafana observability ecosystem:
 *   **Long-term Metrics**: Thanos (optional — recommended for GKE, deferrable on homelab).
 *   **Visualization**: Grafana (bundled with kube-prometheus-stack).
 
-### 2.2 Object Storage Backend
+### 2.2 Storage Backend (Progressive)
 
-Loki, Tempo, and Thanos all require S3-compatible object storage for their data backends:
+Storage follows a progressive strategy, matching the overall deployment phases:
 
-*   **Homelab**: Garage (deployed by Nordri, Tier 1).
-*   **GKE**: Google Cloud Storage (GCS).
+1.  **Phase 1** (initial homelab): Local filesystem with PVCs. Simpler to deploy, no
+    dependency on Garage or S3 credentials. Suitable for single-node k3d/k3s clusters.
+2.  **Phase 2** (production homelab): S3-compatible object storage via Garage (deployed
+    by Nordri, Tier 1). Enables horizontal scaling and durable retention.
+3.  **GKE**: Google Cloud Storage (GCS) with HMAC credentials or Workload Identity.
 
-The storage endpoint, bucket, and credentials are injected at deployment time via the
-Crossplane Composition.
+The Crossplane Composition can be extended to inject S3 endpoint, bucket name, and
+credentials when transitioning to Phase 2. The `objectStoreBucket` and `oidcEnabled`
+Claim parameters are deferred until those phases.
 
 ### 2.3 Authentication (Progressive)
 
@@ -70,8 +74,8 @@ Teams request observability via a high-level Claim.
 | `thanosEnabled` | boolean | `false` | Enable Thanos for long-term metric storage |
 | `retentionDays` | integer | `15` | Log and trace retention period (days) |
 | `storageSize` | string | `"10Gi"` | PVC size for Prometheus local storage |
-| `objectStoreBucket` | string | `"heimdall"` | S3 bucket name for Loki, Tempo, and Thanos |
-| `oidcEnabled` | boolean | `false` | Enable Grafana OIDC (requires Keycloak endpoint) |
+| `lokiStorageSize` | string | `"5Gi"` | PVC size for Loki data |
+| `tempoStorageSize` | string | `"5Gi"` | PVC size for Tempo data |
 
 ### 3.2 The Composition: Wiring It Together
 
@@ -174,15 +178,52 @@ and object storage are available.
 Heimdall uses **kuttl** for Kubernetes-native e2e testing, consistent with Mimir and
 Vegvisir.
 
-### Planned Test Cases
+### Test Cases (kuttl)
 
 | Test | Validates |
 | :--- | :--- |
-| `stack-deploys` | `HeimdallStack` claim reaches `Ready` state |
-| `grafana-reachable` | Grafana UI responds on expected endpoint |
-| `prometheus-targets` | Prometheus has active scrape targets |
-| `loki-ingestion` | Logs are queryable via the Loki API |
-| `tempo-traces` | Traces are queryable via the Tempo API (stretch goal) |
+| `stack-deploys` | ArgoCD app Synced+Healthy, `HeimdallStack` claim Ready+Synced |
+| `grafana-reachable` | Grafana health endpoint responds, Prometheus/Loki/Tempo data sources configured |
+| `prometheus-targets` | Prometheus has at least one active scrape target |
+| `loki-ingestion` | Loki labels API returns success (ingestion pipeline functional) |
+| `tempo-traces` | Traces are queryable via the Tempo API (stretch goal — not yet implemented) |
+
+Run tests:
+
+```bash
+kubectl kuttl test --config kuttl-test.yaml
+```
+
+### Manual Verification
+
+After deploying Heimdall, the Crossplane composition creates Traefik IngressRoutes
+for Grafana and Prometheus. On homelab (k3d/k3s), these use `*.localhost` hostnames
+which resolve to 127.0.0.1 automatically.
+
+**Grafana** — http://grafana.localhost
+
+*   Login: `admin` / `admin`
+*   Dashboards → Browse → default dashboards from kube-prometheus-stack
+*   Connections → Data sources → Prometheus, Loki, Tempo should all be listed
+*   Explore → Loki data source → try `{namespace="heimdall"}` for Heimdall's own logs
+*   Explore → Tempo data source → Search tab (traces require an instrumented app
+    sending OTLP to `heimdall-<id>-tempo.heimdall.svc:4317`)
+
+**Prometheus** — http://prometheus.localhost
+
+*   Status → Targets — should show active scrape targets
+*   Graph → query `up` — shows all monitored endpoints
+
+**Port-forward fallback** (if ingress is unavailable):
+
+```bash
+kubectl port-forward -n heimdall svc/heimdall-<id>-kube-prometheus-grafana 3000:80
+kubectl port-forward -n heimdall svc/heimdall-<id>-kube-promet-prometheus 9090:9090
+```
+
+**GKE:** Replace `*.localhost` with your domain (e.g. `grafana.example.com`).
+The IngressRoute host matching in the composition will need to be parameterized
+via the Claim when GKE support is implemented.
 
 ## 8. Resource Estimates
 

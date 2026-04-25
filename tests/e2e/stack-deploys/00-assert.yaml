@@ -1,0 +1,24 @@
+# Assert the ArgoCD Application is Synced and Healthy
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: heimdall
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
+---
+# Assert the HeimdallStack claim is Ready and Synced
+apiVersion: heimdall.siliconsaga.org/v1alpha1
+kind: HeimdallStack
+metadata:
+  name: heimdall
+  namespace: heimdall
+status:
+  conditions:
+  - type: Synced
+    status: "True"
+  - type: Ready
+    status: "True"

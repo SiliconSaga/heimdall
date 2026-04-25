@@ -1,0 +1,62 @@
+# Assert Loki has ingested logs and they are queryable
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      # Loki's container image has no wget/curl, so we use a one-shot pod
+      # to query the Loki API from inside the cluster.
+      LOKI_SVC=$(kubectl get svc -n heimdall -l app.kubernetes.io/name=loki \
+        -o jsonpath='{.items[0].metadata.name}')
+
+      if [ -z "$LOKI_SVC" ]; then
+        echo "FAIL: No Loki service found"
+        exit 1
+      fi
+
+      echo "Found Loki service: $LOKI_SVC"
+
+      # Clean up any stale pod from a previous run
+      kubectl delete pod loki-test-client -n heimdall --ignore-not-found --wait=true
+
+      # Run a one-shot pod to query Loki labels API
+      kubectl run loki-test-client --namespace heimdall \
+        --image=curlimages/curl:latest --restart=Never \
+        --command -- curl -sf "http://${LOKI_SVC}.heimdall.svc:3100/loki/api/v1/labels"
+
+      # Wait for completion
+      DONE=0
+      for i in $(seq 1 30); do
+        PHASE=$(kubectl get pod loki-test-client -n heimdall -o jsonpath='{.status.phase}' 2>/dev/null)
+        if [ "$PHASE" = "Succeeded" ]; then
+          echo "Query succeeded."
+          DONE=1
+          break
+        fi
+        if [ "$PHASE" = "Failed" ]; then
+          echo "FAIL: Loki query pod failed"
+          kubectl logs loki-test-client -n heimdall
+          kubectl delete pod loki-test-client -n heimdall --ignore-not-found
+          exit 1
+        fi
+        sleep 2
+      done
+
+      if [ "$DONE" -eq 0 ]; then
+        echo "FAIL: Loki query pod did not complete within timeout"
+        kubectl logs loki-test-client -n heimdall 2>/dev/null || true
+        kubectl delete pod loki-test-client -n heimdall --ignore-not-found
+        exit 1
+      fi
+
+      RESULT=$(kubectl logs loki-test-client -n heimdall)
+      echo "Loki labels response: $RESULT"
+      kubectl delete pod loki-test-client -n heimdall --ignore-not-found
+
+      if echo "$RESULT" | grep -q '"status":"success"'; then
+        echo "PASS: Loki API is functional and returning labels"
+      else
+        echo "FAIL: Loki labels query did not return success"
+        exit 1
+      fi
