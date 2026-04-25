@@ -35,8 +35,10 @@ commands:
         -o jsonpath='{.items[0].data.admin-password}' | base64 -d)
 
       # Check that Prometheus, Loki, and Tempo data sources exist
+      # Use Authorization header instead of URL credentials (safe for special chars)
+      AUTH_HEADER="Authorization: Basic $(printf 'admin:%s' "$GRAFANA_PW" | base64 -w0)"
       DATASOURCES=$(kubectl exec -n heimdall "$GRAFANA_POD" -c grafana -- \
-        wget -qO- "http://admin:${GRAFANA_PW}@localhost:3000/api/datasources" 2>/dev/null)
+        wget -qO- --header="$AUTH_HEADER" http://localhost:3000/api/datasources 2>/dev/null)
 
       echo "Data sources: $DATASOURCES"
 

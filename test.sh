@@ -22,8 +22,10 @@ kubectl config view --minify --flatten \
   > "$TEMP_KUBECONFIG"
 
 # Ensure insecure-skip-tls-verify is present even if no certificate-authority-data existed
+# Uses awk instead of sed -i for portability (GNU sed vs BSD sed)
 if ! grep -q 'insecure-skip-tls-verify' "$TEMP_KUBECONFIG"; then
-  sed -i '/server:/a\    insecure-skip-tls-verify: true' "$TEMP_KUBECONFIG"
+  awk '1; /^[[:space:]]*server:/ {print "    insecure-skip-tls-verify: true"}' \
+    "$TEMP_KUBECONFIG" > "${TEMP_KUBECONFIG}.tmp" && mv "${TEMP_KUBECONFIG}.tmp" "$TEMP_KUBECONFIG"
 fi
 
 cleanup() { rm -f "$TEMP_KUBECONFIG"; }
