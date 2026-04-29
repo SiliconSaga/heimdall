@@ -12,6 +12,25 @@ spec:
   pipeline:
 
   # ──────────────────────────────────────────────────────────
+  # Step 0: Load cluster identity (environment, storageClass, domain)
+  # Crossplane v2 requires a function call to populate the pipeline context;
+  # the older `spec.environment.environmentConfigs` Composition field is gone.
+  # Downstream templates read overrides from spec.parameters first, then fall
+  # back to the EnvironmentConfig values via Sprig's `default`.
+  # ──────────────────────────────────────────────────────────
+  - step: load-cluster-identity
+    functionRef:
+      name: function-environment-configs
+    input:
+      apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        environmentConfigs:
+        - type: Reference
+          ref:
+            name: cluster-identity
+
+  # ──────────────────────────────────────────────────────────
   # Step 1: kube-prometheus-stack (Prometheus + Grafana + AlertManager)
   # ──────────────────────────────────────────────────────────
   - step: deploy-kube-prometheus-stack
@@ -23,6 +42,9 @@ spec:
       source: Inline
       inline:
         template: |
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $env := .observed.composite.resource.spec.parameters.environment | default $identity.environment -}}
+          {{- $storageClass := $identity.storageClass -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -39,7 +61,7 @@ spec:
               values:
                 prometheus:
                   prometheusSpec:
-                    {{- if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}
+                    {{- if eq $env "gke" }}
                     replicas: 2
                     {{- else }}
                     replicas: 1
@@ -48,7 +70,7 @@ spec:
                     storageSpec:
                       volumeClaimTemplate:
                         spec:
-                          storageClassName: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
+                          storageClassName: {{ $storageClass }}
                           accessModes: ["ReadWriteOnce"]
                           resources:
                             requests:
@@ -117,6 +139,8 @@ spec:
       source: Inline
       inline:
         template: |
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $storageClass := $identity.storageClass -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -156,7 +180,7 @@ spec:
                   replicas: 1
                   persistence:
                     enabled: true
-                    storageClass: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
+                    storageClass: {{ $storageClass }}
                     size: {{ .observed.composite.resource.spec.parameters.lokiStorageSize | default "5Gi" }}
                   resources:
                     requests:
@@ -191,6 +215,8 @@ spec:
       source: Inline
       inline:
         template: |
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $storageClass := $identity.storageClass -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -221,7 +247,7 @@ spec:
                         path: /var/tempo/traces
                 persistence:
                   enabled: true
-                  storageClassName: {{ if eq (.observed.composite.resource.spec.parameters.environment | default "homelab") "gke" }}standard-rwo{{ else }}local-path{{ end }}
+                  storageClassName: {{ $storageClass }}
                   size: {{ .observed.composite.resource.spec.parameters.tempoStorageSize | default "5Gi" }}
                 resources:
                   requests:
@@ -243,6 +269,8 @@ spec:
       source: Inline
       inline:
         template: |
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $domain := .observed.composite.resource.spec.parameters.domain | default $identity.domain -}}
           apiVersion: kubernetes.crossplane.io/v1alpha2
           kind: Object
           metadata:
@@ -262,7 +290,7 @@ spec:
                     - web
                     - websecure
                   routes:
-                    - match: Host(`grafana.{{ .observed.composite.resource.spec.parameters.domain | default "localhost" }}`)
+                    - match: Host(`grafana.{{ $domain }}`)
                       kind: Rule
                       services:
                         - name: {{ .observed.composite.resource.metadata.name }}-kube-prometheus-grafana
@@ -286,7 +314,7 @@ spec:
                   entryPoints:
                     - web
                   routes:
-                    - match: Host(`prometheus.{{ .observed.composite.resource.spec.parameters.domain | default "localhost" }}`)
+                    - match: Host(`prometheus.{{ $domain }}`)
                       kind: Rule
                       services:
                         - name: {{ .observed.composite.resource.metadata.name }}-kube-promet-prometheus
