@@ -30,8 +30,9 @@ Grafana data sources are wired inline in the kube-prometheus-stack values:
 | **Phase 1** (current) | Local filesystem PVCs | Initial homelab deployment |
 | **Phase 2** | S3 via Garage (homelab) or GCS (GKE) | When Garage is stable and retention matters |
 
-Phase 1 reads `storageClassName` from `EnvironmentConfig/cluster-identity`
-(loaded into the pipeline context by `function-environment-configs`):
+Phase 1 reads `storageClass` from `EnvironmentConfig/cluster-identity`
+(loaded into the pipeline context by `function-environment-configs`)
+and applies it as `storageClassName` on the rendered PVCs:
 - `homelab` cluster identity → `local-path`
 - `gke` cluster identity → `standard-rwo`
 
