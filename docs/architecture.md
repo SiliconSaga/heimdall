@@ -88,5 +88,7 @@ Features planned but not yet implemented:
 - **Uptime Kuma** — cross-environment synthetic monitoring and status pages.
   Each environment runs an instance that monitors the other's endpoints,
   providing watchdog alerting when the main stack goes down.
+- **Cluster identity** — Crossplane EnvironmentConfig stamped by Nordri
+  at bootstrap, enabling environment-agnostic claims across all components.
 - **Alerting rules** — Pre-configured PrometheusRules for common failure
   patterns (pod crashlooping, node pressure, PVC filling).
