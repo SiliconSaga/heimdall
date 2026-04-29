@@ -5,7 +5,9 @@ metadata:
   namespace: heimdall
 spec:
   parameters:
-    environment: homelab
+    # environment and domain are sourced from EnvironmentConfig/cluster-identity
+    # by the composition pipeline. Set them here only to override the cluster
+    # default for this specific claim.
     thanosEnabled: false
     retentionDays: 15
     storageSize: "10Gi"

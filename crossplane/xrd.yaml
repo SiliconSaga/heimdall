@@ -26,9 +26,8 @@ spec:
                 properties:
                   environment:
                     type: string
-                    default: "homelab"
                     enum: ["homelab", "gke"]
-                    description: "Target environment; controls storage backend and replica counts"
+                    description: "Optional override for the target environment. Defaults to the value in EnvironmentConfig/cluster-identity. Controls replica counts."
                   thanosEnabled:
                     type: boolean
                     default: false
@@ -52,10 +51,7 @@ spec:
                     description: "PVC size for Tempo data"
                   domain:
                     type: string
-                    default: "localhost"
-                    description: "Base domain for ingress routes (e.g. localhost, example.com)"
-                required:
-                - environment
+                    description: "Optional override for the ingress base domain. Defaults to EnvironmentConfig/cluster-identity.domain."
             required:
             - parameters
           status:

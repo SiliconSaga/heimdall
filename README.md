@@ -33,7 +33,7 @@ charts (kube-prometheus-stack, Loki, Tempo) and create Traefik IngressRoutes.
 crossplane/
   xrd.yaml           HeimdallStack v1alpha1 API definition
   composition.yaml   Pipeline: Helm releases + ingress routes + auto-ready
-  claim.yaml         Homelab instance (environment: homelab, domain: localhost)
+  claim.yaml         Homelab instance (defaults from EnvironmentConfig/cluster-identity)
 docs/
   architecture.md    Deep design — phases, storage strategy, GKE differences
 tests/
@@ -53,10 +53,16 @@ Requires Docker and a running cluster with Heimdall deployed.
 
 ## Claim parameters
 
+`environment`, `storageClass`, and `domain` are sourced from
+`EnvironmentConfig/cluster-identity` (provisioned by Nordri per environment) and
+do not need to be set on the claim. The composition reads them from the pipeline
+context via `function-environment-configs`. Set `environment` or `domain` on the
+claim only when overriding the cluster default.
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `environment` | `homelab` | `homelab` or `gke` — controls storage class and replicas |
-| `domain` | `localhost` | Base domain for ingress (e.g. `example.com` on GKE) |
+| `environment` | from cluster-identity | Optional override. `homelab` or `gke` — controls Prometheus replicas |
+| `domain` | from cluster-identity | Optional override. Base domain for ingress hosts |
 | `retentionDays` | `15` | Log and trace retention period |
 | `storageSize` | `10Gi` | Prometheus PVC size |
 | `lokiStorageSize` | `5Gi` | Loki PVC size |

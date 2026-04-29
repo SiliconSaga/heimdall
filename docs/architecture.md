@@ -15,7 +15,10 @@ The Crossplane Composition (`crossplane/composition.yaml`) uses
 3. **Tempo** (Provider-Helm Release) — Distributed tracing with local storage,
    OTLP receivers on gRPC (4317) and HTTP (4318).
 4. **Ingress Routes** (Provider-Kubernetes Objects) — Traefik IngressRoutes for
-   Grafana and Prometheus, domain parameterized via the Claim.
+   Grafana and Prometheus. The base domain defaults to
+   `EnvironmentConfig/cluster-identity` (loaded into the pipeline context by
+   `function-environment-configs`); the Claim's `domain` parameter is an
+   optional override.
 5. **Auto-ready** — marks the composite resource Ready when all children are.
 
 Grafana data sources are wired inline in the kube-prometheus-stack values:
@@ -30,9 +33,11 @@ Grafana data sources are wired inline in the kube-prometheus-stack values:
 | **Phase 1** (current) | Local filesystem PVCs | Initial homelab deployment |
 | **Phase 2** | S3 via Garage (homelab) or GCS (GKE) | When Garage is stable and retention matters |
 
-Phase 1 uses `storageClassName` branched on the `environment` parameter:
-- `homelab` → `local-path`
-- `gke` → `standard-rwo`
+Phase 1 reads `storageClass` from `EnvironmentConfig/cluster-identity`
+(loaded into the pipeline context by `function-environment-configs`)
+and applies it as `storageClassName` on the rendered PVCs:
+- `homelab` cluster identity → `local-path`
+- `gke` cluster identity → `standard-rwo`
 
 Phase 2 will add `objectStoreBucket` and S3 credential injection to the
 Composition, switching Loki/Tempo from filesystem to S3 backends.
@@ -52,10 +57,10 @@ parameter is added to the Claim.
 
 | Aspect | Homelab (k3d/k3s) | GKE |
 |--------|-------------------|-----|
-| Storage class | `local-path` | `standard-rwo` |
+| Storage class | `local-path` (from cluster-identity) | `standard-rwo` (from cluster-identity) |
 | Prometheus replicas | 1 | 2 |
 | Loki mode | SingleBinary | SingleBinary (Phase 2: SimpleScalable) |
-| Ingress domain | `*.localhost` | Parameterized via Claim |
+| Ingress domain | `*.homelab.local` (from cluster-identity) | from cluster-identity (optional claim override per cluster) |
 
 ## Resource Estimates
 
@@ -88,7 +93,5 @@ Features planned but not yet implemented:
 - **Uptime Kuma** — cross-environment synthetic monitoring and status pages.
   Each environment runs an instance that monitors the other's endpoints,
   providing watchdog alerting when the main stack goes down.
-- **Cluster identity** — Crossplane EnvironmentConfig stamped by Nordri
-  at bootstrap, enabling environment-agnostic claims across all components.
 - **Alerting rules** — Pre-configured PrometheusRules for common failure
   patterns (pod crashlooping, node pressure, PVC filling).
