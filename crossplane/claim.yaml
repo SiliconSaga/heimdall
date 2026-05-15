@@ -10,6 +10,6 @@ spec:
     # default for this specific claim.
     thanosEnabled: false
     retentionDays: 15
-    storageSize: "10Gi"
+    storageSize: "20Gi"
     lokiStorageSize: "5Gi"
     tempoStorageSize: "5Gi"
