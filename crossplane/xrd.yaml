@@ -34,9 +34,9 @@ spec:
                     description: "Enable Thanos for long-term metric storage"
                   retentionDays:
                     type: integer
-                    default: 15
+                    default: 7
                     minimum: 1
-                    description: "Log and trace retention period (days)"
+                    description: "Log and trace retention period (days). Default tuned down from 15→7 as a stopgap until S3/Garage object-store backend lands (Heimdall Phase 2)."
                   storageSize:
                     type: string
                     default: "10Gi"

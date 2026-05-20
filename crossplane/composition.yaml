@@ -66,7 +66,7 @@ spec:
                     {{- else }}
                     replicas: 1
                     {{- end }}
-                    retention: {{ .observed.composite.resource.spec.parameters.retentionDays | default 15 }}d
+                    retention: {{ .observed.composite.resource.spec.parameters.retentionDays | default 7 }}d
                     storageSpec:
                       volumeClaimTemplate:
                         spec:
@@ -172,7 +172,7 @@ spec:
                   storage:
                     type: filesystem
                   limits_config:
-                    retention_period: {{ .observed.composite.resource.spec.parameters.retentionDays | default 15 }}d
+                    retention_period: {{ .observed.composite.resource.spec.parameters.retentionDays | default 7 }}d
                   compactor:
                     retention_enabled: true
                     delete_request_store: filesystem
@@ -232,7 +232,7 @@ spec:
               namespace: heimdall
               values:
                 tempo:
-                  retention: {{ mul (.observed.composite.resource.spec.parameters.retentionDays | default 15) 24 }}h
+                  retention: {{ mul (.observed.composite.resource.spec.parameters.retentionDays | default 7) 24 }}h
                   receivers:
                     otlp:
                       protocols:
@@ -256,6 +256,110 @@ spec:
                   limits:
                     cpu: "1"
                     memory: 1Gi
+
+  # ──────────────────────────────────────────────────────────
+  # Step 3.5: Self-health PrometheusRules
+  #
+  # Heimdall-scoped alerts that would have caught the 2026-05-15 GKE
+  # crashloop (4d18h, 1328 + 275 restarts, full WAL) before users noticed.
+  # The chart's default rules cover this in the general case
+  # (KubePersistentVolumeFillingUp etc.) but fire across the whole cluster;
+  # these are namespace-pinned with heimdall-specific labels for clean
+  # routing once AlertManager notifications land in a follow-up arc.
+  #
+  # The `release: <name>-kube-prometheus` label matches the kube-prometheus-
+  # stack default `ruleSelectorNilUsesHelmValues: true` so the operator
+  # picks the rule up automatically.
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-self-health-rules
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          {{- $name := .observed.composite.resource.metadata.name -}}
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-self-health-rules
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: self-health-rules
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: PrometheusRule
+                metadata:
+                  name: heimdall-self-health
+                  namespace: heimdall
+                  labels:
+                    release: {{ $name }}-kube-prometheus
+                    app.kubernetes.io/part-of: heimdall
+                    app.kubernetes.io/component: alert-rules
+                spec:
+                  groups:
+                  - name: heimdall.pvc-fill
+                    interval: 1m
+                    rules:
+                    - alert: HeimdallPVCFillingUp
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{namespace="heimdall"}
+                         / kubelet_volume_stats_capacity_bytes{namespace="heimdall"}) > 0.80
+                      for: 15m
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} in the heimdall namespace has been above 80% utilization for 15 minutes. This is the precursor to the 2026-05-15 Prometheus WAL-full crashloop incident — investigate disk pressure, retention settings, or expand the PVC.` | quote }}
+                    - alert: HeimdallPVCCritical
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{namespace="heimdall"}
+                         / kubelet_volume_stats_capacity_bytes{namespace="heimdall"}) > 0.90
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full — imminent out-of-space` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} above 90% utilization for 5 minutes. Out-of-space and pod crashloop are imminent. Expand the PVC immediately or reduce retentionDays.` | quote }}
+                  - name: heimdall.prometheus-health
+                    interval: 1m
+                    rules:
+                    - alert: HeimdallPrometheusRestartStorm
+                      expr: |
+                        changes(kube_pod_container_status_restarts_total{
+                          namespace="heimdall",
+                          container="prometheus"
+                        }[15m]) > 3
+                      for: 0m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Prometheus pod {{ $labels.pod }} restarted more than 3 times in 15 minutes` | quote }}
+                        description: {{ `The pod restarted {{ $value }} times in 15 minutes — restart-storm pattern. Check pod logs for "no space left on device", WAL corruption, or OOMKilled. Matches the 2026-05-15 incident shape.` | quote }}
+                    - alert: HeimdallPrometheusWALCorruption
+                      expr: increase(prometheus_tsdb_wal_corruptions_total{namespace="heimdall"}[10m]) > 0
+                      for: 0m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Prometheus TSDB WAL corruption detected on {{ $labels.instance }}` | quote }}
+                        description: {{ `{{ $value }} WAL corruption events reported in the last 10 minutes. Data loss likely; investigate disk health and Prometheus logs.` | quote }}
+                    - alert: HeimdallPrometheusTSDBCompactionFailures
+                      expr: increase(prometheus_tsdb_compactions_failed_total{namespace="heimdall"}[1h]) > 0
+                      for: 0m
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Prometheus TSDB compaction failures on {{ $labels.instance }}` | quote }}
+                        description: {{ `{{ $value }} compaction failures in the last hour. Often a precursor to disk pressure or storage backend issues.` | quote }}
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)
