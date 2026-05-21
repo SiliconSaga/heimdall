@@ -36,7 +36,7 @@ spec:
                     type: integer
                     default: 7
                     minimum: 1
-                    description: "Log and trace retention period (days). Default tuned down from 15→7 as a stopgap until S3/Garage object-store backend lands (Heimdall Phase 2)."
+                    description: "Retention period (days) for logs (Loki), traces (Tempo), and metrics (Prometheus). Default tuned down from 15→7 as a stopgap until S3/Garage object-store backend lands (Heimdall Phase 2)."
                   storageSize:
                     type: string
                     default: "10Gi"

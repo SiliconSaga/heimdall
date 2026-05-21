@@ -6,7 +6,7 @@ For quickstart and usage, see the [README](../README.md).
 ## Composition Pipeline
 
 The Crossplane Composition (`crossplane/composition.yaml`) uses
-`function-go-templating` to deploy and configure five steps:
+`function-go-templating` to deploy and configure six steps:
 
 1. **kube-prometheus-stack** (Provider-Helm Release) — Prometheus, Grafana,
    AlertManager, node-exporter, kube-state-metrics, default dashboards.
@@ -19,7 +19,7 @@ The Crossplane Composition (`crossplane/composition.yaml`) uses
    WAL corruption, TSDB compaction failures. Labelled with
    `release: <name>-kube-prometheus` so kube-prometheus-stack's default rule
    selector picks them up. Designed for the
-   [2026-05-15 incident class](../../docs/plans/2026-05-19-heimdall-monitoring-design.md);
+   [2026-05-15 incident class](https://github.com/SiliconSaga/yggdrasil/blob/main/docs/plans/2026-05-19-heimdall-monitoring-design.md);
    AlertManager notification routing follows in a separate arc.
 5. **Ingress Routes** (Provider-Kubernetes Objects) — Traefik IngressRoutes for
    Grafana and Prometheus. The base domain defaults to
