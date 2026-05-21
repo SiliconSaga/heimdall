@@ -6,7 +6,7 @@ For quickstart and usage, see the [README](../README.md).
 ## Composition Pipeline
 
 The Crossplane Composition (`crossplane/composition.yaml`) uses
-`function-go-templating` to deploy and configure five steps:
+`function-go-templating` to deploy and configure six steps:
 
 1. **kube-prometheus-stack** (Provider-Helm Release) — Prometheus, Grafana,
    AlertManager, node-exporter, kube-state-metrics, default dashboards.
@@ -14,12 +14,19 @@ The Crossplane Composition (`crossplane/composition.yaml`) uses
    with filesystem storage and TSDB schema v13.
 3. **Tempo** (Provider-Helm Release) — Distributed tracing with local storage,
    OTLP receivers on gRPC (4317) and HTTP (4318).
-4. **Ingress Routes** (Provider-Kubernetes Objects) — Traefik IngressRoutes for
+4. **Self-health PrometheusRules** (Provider-Kubernetes Object) — Heimdall-scoped
+   alerts: PVC fill (warn at 80%, critical at 90%), Prometheus restart-storm,
+   WAL corruption, TSDB compaction failures. Labelled with
+   `release: <name>-kube-prometheus` so kube-prometheus-stack's default rule
+   selector picks them up. Designed for the
+   [2026-05-15 incident class](https://github.com/SiliconSaga/yggdrasil/blob/main/docs/plans/2026-05-19-heimdall-monitoring-design.md);
+   AlertManager notification routing follows in a separate arc.
+5. **Ingress Routes** (Provider-Kubernetes Objects) — Traefik IngressRoutes for
    Grafana and Prometheus. The base domain defaults to
    `EnvironmentConfig/cluster-identity` (loaded into the pipeline context by
    `function-environment-configs`); the Claim's `domain` parameter is an
    optional override.
-5. **Auto-ready** — marks the composite resource Ready when all children are.
+6. **Auto-ready** — marks the composite resource Ready when all children are.
 
 Grafana data sources are wired inline in the kube-prometheus-stack values:
 - Prometheus (default, auto-discovered by sidecar)
@@ -93,5 +100,10 @@ Features planned but not yet implemented:
 - **Uptime Kuma** — cross-environment synthetic monitoring and status pages.
   Each environment runs an instance that monitors the other's endpoints,
   providing watchdog alerting when the main stack goes down.
-- **Alerting rules** — Pre-configured PrometheusRules for common failure
-  patterns (pod crashlooping, node pressure, PVC filling).
+- **AlertManager notification routing** — Slack/email/webhook delivery for
+  firing alerts. Until this lands, alerts from the self-health PrometheusRules
+  (step 4) are visible only via Grafana's AlertManager UI panel.
+- **Broader alerting rules** — beyond the self-health set, app/runtime alerts
+  (pod crashlooping, node pressure across non-heimdall namespaces). The chart's
+  default rules cover much of this; this item tracks any heimdall-curated
+  additions that emerge from incident patterns.

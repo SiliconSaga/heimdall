@@ -63,7 +63,7 @@ claim only when overriding the cluster default.
 |-----------|---------|-------------|
 | `environment` | from cluster-identity | Optional override. `homelab` or `gke` — controls Prometheus replicas |
 | `domain` | from cluster-identity | Optional override. Base domain for ingress hosts |
-| `retentionDays` | `15` | Log and trace retention period |
+| `retentionDays` | `7` | Log and trace retention period (days). Stopgap default until the S3/Garage backend lands |
 | `storageSize` | `10Gi` | Prometheus PVC size |
 | `lokiStorageSize` | `5Gi` | Loki PVC size |
 | `tempoStorageSize` | `5Gi` | Tempo PVC size |
