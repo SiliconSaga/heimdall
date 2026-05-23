@@ -9,7 +9,7 @@ The Crossplane Composition (`crossplane/composition.yaml`) uses
 `function-go-templating` to deploy and configure six steps:
 
 1. **kube-prometheus-stack** (Provider-Helm Release) — Prometheus, Grafana,
-   AlertManager, node-exporter, kube-state-metrics, default dashboards.
+   AlertManager, node-exporter, kube-state-metrics, default dashboards. AlertManager is configured with a severity-routing tree: `warning` alerts route to ntfy (quiet push), `critical` alerts route to ntfy with a 1 h repeat and optionally to Knarr (SMS/call escalation) when `knarrWebhookUrl` is set on the Claim — see [Alerting & Notification](#alerting--notification) below.
 2. **Loki** (Provider-Helm Release) — Log aggregation in SingleBinary mode
    with filesystem storage and TSDB schema v13.
 3. **Tempo** (Provider-Helm Release) — Distributed tracing with local storage,
@@ -32,6 +32,12 @@ Grafana data sources are wired inline in the kube-prometheus-stack values:
 - Prometheus (default, auto-discovered by sidecar)
 - Loki (with trace-to-log derivedFields linking to Tempo)
 - Tempo (with tracesToLogs and serviceMap linking back)
+
+## Alerting & Notification
+
+AlertManager routes firing alerts by severity to ntfy (in-cluster at `http://ntfy.ntfy.svc.cluster.local/heimdall-alerts`). `warning` alerts deliver as quiet pushes; `critical` alerts override DND with a 1 h repeat interval. ntfy is deployed as a 0-replica standby in the homelab via Nidavellir — delivery only succeeds where ntfy is active, which is expected.
+
+A dormant Knarr escalation seam is wired into the `ntfy-critical` receiver as a second `webhook_configs` entry. When the Claim's `knarrWebhookUrl` parameter is unset the seam emits nothing (gated by `{{- if }}` in the go-template, so no inert placeholder URL is rendered). When set, Knarr receives the standard AlertManager webhook v4 payload and handles SMS/call escalation for critical alerts. The full notification routing design is documented at https://github.com/SiliconSaga/nidavellir/blob/main/docs/plans/2026-05-21-alert-notification-routing-design.md.
 
 ## Storage Strategy (Progressive)
 
@@ -100,9 +106,7 @@ Features planned but not yet implemented:
 - **Uptime Kuma** — cross-environment synthetic monitoring and status pages.
   Each environment runs an instance that monitors the other's endpoints,
   providing watchdog alerting when the main stack goes down.
-- **AlertManager notification routing** — Slack/email/webhook delivery for
-  firing alerts. Until this lands, alerts from the self-health PrometheusRules
-  (step 4) are visible only via Grafana's AlertManager UI panel.
+- **AlertManager notification routing** — Severity routing to ntfy (warning: quiet push; critical: DND-override, 1 h repeat) is now implemented, with a dormant Knarr seam for SMS/call escalation when `knarrWebhookUrl` is set. Broader delivery channels (Slack, email) remain future work.
 - **Broader alerting rules** — beyond the self-health set, app/runtime alerts
   (pod crashlooping, node pressure across non-heimdall namespaces). The chart's
   default rules cover much of this; this item tracks any heimdall-curated
