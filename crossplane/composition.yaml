@@ -140,6 +140,9 @@ spec:
                         - matchers: ['severity = "warning"']
                           receiver: ntfy-warning
                     receivers:
+                      # blackhole for non-critical/warning alerts; quotes are
+                      # load-bearing — bare null parses as YAML nil and the
+                      # route's receiver ref would no longer match.
                       - name: 'null'
                       - name: ntfy-warning
                         webhook_configs:
