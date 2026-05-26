@@ -54,7 +54,7 @@ spec:
                     description: "Optional override for the ingress base domain. Defaults to EnvironmentConfig/cluster-identity.domain."
                   knarrWebhookUrl:
                     type: string
-                    pattern: "^https?://.*"
+                    pattern: '^https?://[^\s]+$'
                     description: "Optional AlertManager webhook URL for the future Knarr SMS/call escalation tier. Must be an http(s) URL. When unset, the critical-route Knarr receiver stays inert. Knarr implements a receiver to the standard AlertManager webhook v4 payload at this URL."
             required:
             - parameters

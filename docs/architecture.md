@@ -9,7 +9,7 @@ The Crossplane Composition (`crossplane/composition.yaml`) uses
 `function-go-templating` to deploy and configure six steps:
 
 1. **kube-prometheus-stack** (Provider-Helm Release) — Prometheus, Grafana,
-   AlertManager, node-exporter, kube-state-metrics, default dashboards. AlertManager is configured with a severity-routing tree: `warning` alerts route to ntfy (quiet push), `critical` alerts route to ntfy with a 1 h repeat and optionally to Knarr (SMS/call escalation) when `knarrWebhookUrl` is set on the Claim — see [Alerting & Notification](#alerting--notification) below.
+   AlertManager, node-exporter, kube-state-metrics, default dashboards. AlertManager is configured with a severity-routing tree: the default route sends all non-`critical` alerts to the `ntfy-warning` receiver, and `severity = "critical"` routes to `ntfy-critical` (1 h repeat) plus, optionally, Knarr (SMS/call escalation) when `knarrWebhookUrl` is set on the Claim. Delivery currently posts raw JSON at default priority — severity→priority (DND override) and a genuinely quiet warning tier need the ntfy templating layer; see [Alerting & Notification](#alerting--notification) below.
 2. **Loki** (Provider-Helm Release) — Log aggregation in SingleBinary mode
    with filesystem storage and TSDB schema v13.
 3. **Tempo** (Provider-Helm Release) — Distributed tracing with local storage,
@@ -106,7 +106,7 @@ Features planned but not yet implemented:
 - **Uptime Kuma** — cross-environment synthetic monitoring and status pages.
   Each environment runs an instance that monitors the other's endpoints,
   providing watchdog alerting when the main stack goes down.
-- **AlertManager notification routing** — Severity routing to ntfy (warning: quiet push; critical: DND-override, 1 h repeat) is now implemented, with a dormant Knarr seam for SMS/call escalation when `knarrWebhookUrl` is set. Broader delivery channels (Slack, email) remain future work.
+- **AlertManager notification routing** — the severity routing tree (default → `ntfy-warning`; `critical` → `ntfy-critical`, 1 h repeat) and the dormant Knarr seam are implemented. Priority mapping (so `critical` pierces DND and `warning` stays quiet) and readable formatting are **not yet** active — they need the ntfy templating layer (see the Current limitation under Alerting & Notification). Broader delivery channels (Slack, email) remain future work.
 - **Broader alerting rules** — beyond the self-health set, app/runtime alerts
   (pod crashlooping, node pressure across non-heimdall namespaces). The chart's
   default rules cover much of this; this item tracks any heimdall-curated
