@@ -132,19 +132,22 @@ spec:
                       group_wait: 30s
                       group_interval: 5m
                       repeat_interval: 4h
-                      receiver: ntfy-warning
+                      receiver: 'null'
                       routes:
                         - matchers: ['severity = "critical"']
                           receiver: ntfy-critical
                           repeat_interval: 1h
+                        - matchers: ['severity = "warning"']
+                          receiver: ntfy-warning
                     receivers:
+                      - name: 'null'
                       - name: ntfy-warning
                         webhook_configs:
-                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts"
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts?template=heimdall"
                             send_resolved: true
                       - name: ntfy-critical
                         webhook_configs:
-                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts"
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts?template=heimdall"
                             send_resolved: true
                           {{- if .observed.composite.resource.spec.parameters.knarrWebhookUrl }}
                           - url: "{{ .observed.composite.resource.spec.parameters.knarrWebhookUrl }}"
