@@ -106,7 +106,7 @@ Features planned but not yet implemented:
 - **Uptime Kuma** — cross-environment synthetic monitoring and status pages.
   Each environment runs an instance that monitors the other's endpoints,
   providing watchdog alerting when the main stack goes down.
-- **AlertManager notification routing** — the severity routing tree (`critical` → `ntfy-critical`, 1 h repeat; `warning` → `ntfy-warning`; everything else blackholed) and the dormant Knarr seam are implemented. Priority mapping (so `critical` pierces DND and `warning` stays quiet) and readable formatting are active via the ntfy `?template=heimdall` server-side template (see Alerting & Notification). Broader delivery channels (Slack, email) remain future work.
+- **Broader notification channels** — AlertManager→ntfy routing with severity→priority, server-side formatting, and flood-control filtering is **shipped** (see [Alerting & Notification](#alerting--notification)). Still future: additional delivery channels (Slack, email) and activating the wired-but-dormant Knarr SMS/call escalation seam.
 - **Broader alerting rules** — beyond the self-health set, app/runtime alerts
   (pod crashlooping, node pressure across non-heimdall namespaces). The chart's
   default rules cover much of this; this item tracks any heimdall-curated
