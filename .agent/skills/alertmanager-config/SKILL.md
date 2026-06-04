@@ -119,9 +119,14 @@ alertmanager:
             payload: |
               {
                 "alerts": [{{ range $i, $a := .Alerts }}{{ if $i }},{{ end }}
-                  {"title":"{{ $a.Labels.alertname }}","msg":"{{ $a.Annotations.description }}"}
+                  {"title":{{ $a.Labels.alertname | printf "%q" }},"msg":{{ $a.Annotations.description | printf "%q" }}}
                 {{ end }}]
               }
+              # `printf "%q"` produces a Go-quoted string — escapes embedded quotes,
+              # backslashes, and control chars to valid JSON. Without this, an alertname
+              # or description containing `"` or a newline breaks the JSON. (AlertManager's
+              # template engine doesn't include sprig's `toJson`, so `printf "%q"` is the
+              # portable native-template escape.)
           # Option 2 (server-side template on receiver):
           # - url: 'http://ntfy.ntfy.svc.cluster.local/<topic>?template=pager'
           # Option 3 (webhook bridge — only if neither side can express the shape):
