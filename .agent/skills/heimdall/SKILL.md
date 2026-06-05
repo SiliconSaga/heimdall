@@ -1,9 +1,11 @@
 ---
 name: heimdall
-description: Use when claiming a Heimdall observability instance from another component (`XHeimdallStack` claim parameters), wiring up severity→ntfy-priority for a new alert, configuring the dormant Knarr SMS/call escalation seam, or understanding why the Heimdall composition is so thin (most operational depth defers to sibling skills `alertmanager-config` + `kube-prometheus-stack`). Critical seam: **severity→priority mapping is in Nidavellir's ntfy template, NOT in Heimdall** — easy to chase the wrong file otherwise.
+description: "Use when claiming a Heimdall observability instance from another component (`XHeimdallStack` claim parameters), wiring up severity→ntfy-priority for a new alert, configuring the dormant Knarr SMS/call escalation seam, or understanding why the Heimdall composition is so thin (most operational depth defers to sibling skills `alertmanager-config` + `kube-prometheus-stack`). Critical seam — severity→priority mapping is in Nidavellir's ntfy template, NOT in Heimdall — easy to chase the wrong file otherwise."
 ---
 
 # heimdall
+
+> **Path convention:** file references like `components/nidavellir/...` and `components/heimdall/...` below are **workspace-relative** — they resolve in the yggdrasil checkout that hosts this component. From inside the heimdall repo alone they map to `../nidavellir/` etc. Run `ws clone <name>` from the workspace root to materialize a sibling component.
 
 ## Overview
 
@@ -36,12 +38,13 @@ Parameters under `spec.parameters`:
 | `environment` | enum `homelab` / `gke` | from `EnvironmentConfig/cluster-identity` | Drives the few env-aware branches (currently just replica count). Don't override unless testing. |
 | `thanosEnabled` | bool | `false` | Phase-2 pipeline step — Thanos for long-term metric storage (Thanos, not Grafana Mimir). Not wired yet beyond the XRD field. |
 | `retentionDays` | int | `7` | **Stopgap** from the 2026-05-15 Prometheus PVC crashloop — short retention until storage is solved properly via object storage. Bump deliberately, not blindly. |
-| `storageSize` | string | env default | Prometheus PVC size. |
-| `lokiStorageSize` / `tempoStorageSize` | string | env default | Loki + Tempo PVC sizes. |
+| `storageSize` | string | `10Gi` | Prometheus PVC size. |
+| `lokiStorageSize` | string | `5Gi` | Loki PVC size. |
+| `tempoStorageSize` | string | `5Gi` | Tempo PVC size. |
 | `domain` | string | env default | Override for the Grafana/Prometheus hostnames. |
 | `knarrWebhookUrl` | string | unset (dormant) | The Knarr escalation seam — see below. |
 
-Phase-2 params noted in the design but **not yet implemented**: `oidcEnabled` (Keycloak SSO for Grafana), `objectStoreBucket` (Garage/GCS for Loki/Tempo + Thanos). Don't set these in claims until they're wired through the composition.
+Phase-2 params noted in the design but **not yet in the XRD schema**: `oidcEnabled` (Keycloak SSO for Grafana), `objectStoreBucket` (Garage/GCS for Loki/Tempo + Thanos). Setting these in a claim today won't error, but the fields are dropped by schema pruning before the composition sees them — they're not "no-ops at composition time," they never arrive. Wire the XRD first, then expose them in claims.
 
 ## Where the AlertManager Config Lives
 
@@ -95,21 +98,26 @@ The seam is **only on criticals** by design — warnings don't escalate. If you 
 
 The notification path is **identical** on homelab vs GKE: same routing tree, same in-cluster ntfy URL, same Knarr gating. The only env branch in the composition (`composition.yaml` line ~64) bumps `prometheus.prometheusSpec.replicas` from 1 (homelab) to 2 (GKE). Everything else that varies (storage class, domain) flows through `EnvironmentConfig/cluster-identity` — see sibling `crossplane-compositions` skill in Nordri.
 
-If you're tempted to add another env branch in the AM config — don't. Add the variability to ntfy's template (Nidavellir) or to the cluster-identity EnvironmentConfig instead.
+If you're tempted to add another env branch in the AM config — don't. Add the variability to ntfy's template (Nidavellir) or to the cluster-identity `EnvironmentConfig` instead — concretely, the composition's `load-cluster-identity` step reads that EnvironmentConfig into `apiextensions.crossplane.io/environment`, and any env-aware Helm value can branch off it in the `go-templating` step.
 
 ## Common Mistakes
 
 - **Grepping `priority` inside `components/heimdall/`** when wiring a new alert — finds nothing, wastes ~20 minutes. The mapping is in `components/nidavellir/ntfy/heimdall-template.yaml`. (This skill exists largely to short-circuit that mistake.)
-- **Setting `oidcEnabled` or `objectStoreBucket` in a claim** — those are Phase-2 XRD fields not yet wired through the composition. The claim accepts them but they no-op.
+- **Setting `oidcEnabled` or `objectStoreBucket` in a claim** — those are Phase-2 design fields not yet in the XRD schema. The fields get dropped by schema pruning before the composition sees them; they don't "silently no-op," they never arrive. Wire the XRD first.
 - **Bumping `retentionDays` to 30+ without checking storage** — the 7-day default is a stopgap from a real crashloop. Object storage migration (Phase 2) is the proper fix; until then, longer retention risks the PVC filling again.
 - **Editing the rendered AlertManager Secret directly** — gets overwritten on next Operator reconcile. Change the composition (or the claim's Helm-values override).
 - **Assuming the homelab/GKE difference matters for AM routing** — it doesn't. Don't add env branches in the AM config block. Replicas-only is the contract.
 
 ## Sources
 
+In-repo (heimdall):
+
 - `crossplane/xrd.yaml` + `crossplane/claim.yaml` — claim parameter shape.
 - `crossplane/composition.yaml` — the kube-prometheus-stack values, AM config, and Knarr seam. Lines 64 (env replica branch), 120-158 (AM config block), 155-158 (Knarr gating).
+
+Cross-repo (yggdrasil workspace — sibling components require `ws clone`):
+
 - Sibling skills: [`alertmanager-config`](../alertmanager-config/SKILL.md) for routing-tree idioms + Watchdog + amtool; [`kube-prometheus-stack`](../kube-prometheus-stack/SKILL.md) for chart wiring + `release:` label + GKE dual-stack-cost.
-- Nidavellir's ntfy template: `components/nidavellir/ntfy/heimdall-template.yaml` (the severity→priority truth source).
+- Nidavellir's ntfy template: `components/nidavellir/ntfy/heimdall-template.yaml` — the severity→priority truth source.
 - Knarr design: `realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md`.
-- Realm context: `realms/realm-siliconsaga/docs/stack-tier-2.md` (narrative).
+- Realm narrative: `realms/realm-siliconsaga/docs/stack-tier-2.md`.
