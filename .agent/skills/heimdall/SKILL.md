@@ -11,7 +11,7 @@ Heimdall is a thin Crossplane composition wrapping kube-prometheus-stack + Loki 
 
 **Severity → ntfy priority is NOT in Heimdall.** It's server-side in `components/nidavellir/ntfy/heimdall-template.yaml` (workspace path; from inside the heimdall repo alone it's at `../nidavellir/`). AlertManager just POSTs its default envelope to ntfy with `?template=heimdall`; the template renders the `priority` field server-side based on the `severity` label.
 
-Why this matters: grepping `priority` inside `components/heimdall/` finds nothing. First-time wirers waste ~20 min before realizing the mapping is a sibling component's concern. This skill exists largely to short-circuit that mistake.
+Why this matters: from inside this Heimdall repo, grepping `priority` under `crossplane/` (or anywhere else in-repo) returns nothing. First-time wirers waste ~20 min searching here before realizing the mapping is defined server-side in the sibling Nidavellir component's ntfy template. This skill exists largely to short-circuit that mistake.
 
 ## When to Use
 
@@ -48,4 +48,4 @@ Cross-repo (yggdrasil workspace — requires `ws clone`, or follow the GitHub li
 
 - Sibling skills: [`alertmanager-config`](../alertmanager-config/SKILL.md), [`kube-prometheus-stack`](../kube-prometheus-stack/SKILL.md).
 - [`SiliconSaga/nidavellir: ntfy/heimdall-template.yaml`](https://github.com/SiliconSaga/nidavellir/blob/main/ntfy/heimdall-template.yaml) — the severity → priority truth source (workspace path: `components/nidavellir/ntfy/heimdall-template.yaml`).
-- [`SiliconSaga/realm-siliconsaga: docs/stack-tier-2.md`](https://github.com/SiliconSaga/realm-siliconsaga/blob/main/docs/stack-tier-2.md) — realm narrative.
+- Realm narrative: `docs/stack-tier-2.md` in [`SiliconSaga/realm-siliconsaga`](https://github.com/SiliconSaga/realm-siliconsaga) (the file lands on the realm's `main` branch when realm PR #9 merges; until then, view it on the open PR or `ws clone realm-siliconsaga`).
