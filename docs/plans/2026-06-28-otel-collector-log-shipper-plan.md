@@ -37,7 +37,7 @@ A future log/metric consumer's `ServiceMonitor` must carry the label `release: h
 - [ ] Confirm Loki has OTLP ingest reachable. Run a one-shot probe pod: `kubectl run loki-otlp-probe -n heimdall --rm -it --restart=Never --image=curlimages/curl:latest --command -- curl -s -o /dev/null -w '%{http_code}\n' -XPOST http://heimdall-loki.heimdall.svc.cluster.local:3100/otlp/v1/logs -H 'Content-Type: application/json' -d '{}'`. Expect an HTTP status in the `2xx`/`4xx` range (i.e. the endpoint exists and parses) — a `404` would mean the path is wrong and must be fixed before proceeding.
 - [ ] Confirm `auth_enabled: false` in the live Loki config so no tenant header is needed: `kubectl get cm -n heimdall heimdall-loki -o jsonpath='{.data.config\.yaml}' | grep -A1 auth_enabled`. Expect `auth_enabled: false`.
 - [ ] Confirm the chart version to pin still resolves: `helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts` then `helm search repo open-telemetry/opentelemetry-collector --versions --version 0.159.0`. Expect chart `0.159.0` listed. If it has been yanked, pick the nearest stable `0.159.x`/`0.15x` release and use that exact version everywhere below.
-- [ ] Confirm the k8s distro image bundles the required components: `docker run --rm otel/opentelemetry-collector-k8s:latest components` (or inspect the chart's `otel/opentelemetry-collector-k8s` README). Expect `filelog` under receivers and `k8sattributes` under processors. These are what the `logsCollection` and `kubernetesAttributes` presets reference; the base `otel/opentelemetry-collector` (core) distro does NOT include `k8sattributes`, which is why the k8s distro is mandatory here.
+- [ ] Confirm the k8s distro image bundles the required components: `docker run --rm otel/opentelemetry-collector-k8s:0.159.0 components` (or inspect the chart's `otel/opentelemetry-collector-k8s` README). Expect `filelog` under receivers and `k8sattributes` under processors. These are what the `logsCollection` and `kubernetesAttributes` presets reference; the base `otel/opentelemetry-collector` (core) distro does NOT include `k8sattributes`, which is why the k8s distro is mandatory here.
 
 ---
 
@@ -107,7 +107,7 @@ resources:
 
 ```yaml
   # ──────────────────────────────────────────────────────────
-  # Step 2.5: OpenTelemetry Collector (log-shipper DaemonSet)
+  # Step 3.4: OpenTelemetry Collector (log-shipper DaemonSet)
   #
   # Closes the heimdall log-collector gap. Runs one collector per node
   # (DaemonSet) tailing /var/log/pods via the filelog receiver (wired by
@@ -248,85 +248,102 @@ commands:
 
 **Files**
 
-- Create: `tests/e2e/otel-loki-logs/00-cmd.yaml` — a kuttl `TestStep` that queries Loki with LogQL and asserts log streams produced by the collector are present. Mirrors `tests/e2e/loki-ingestion/00-cmd.yaml` (one-shot `curlimages/curl` pod, poll for `Succeeded`, grep the response).
+- Create: `tests/e2e/otel-loki-logs/00-cmd.yaml` — a kuttl `TestStep` that launches a throwaway pod emitting a unique marker line, then queries Loki with LogQL for that exact marker and asserts it was ingested. Mirrors `tests/e2e/loki-ingestion/00-cmd.yaml` (one-shot `curlimages/curl` pod, poll for `Succeeded`, grep the response).
 
 **Interfaces**
 
-- The k8sattributes processor maps pod metadata to OTLP resource attributes; Loki's OTLP ingest promotes a curated subset to stream labels. Query for logs from the heimdall namespace, which the collector itself runs in (guaranteeing traffic). The OTLP-derived namespace label in Loki is `k8s_namespace_name` (Loki sanitizes the OTel `k8s.namespace.name` attribute by replacing dots with underscores). Use a `count_over_time` LogQL query over the last 5m and assert a non-empty result.
+- The k8sattributes processor maps pod metadata to OTLP resource attributes; Loki's OTLP ingest promotes a curated subset to stream labels. To prove the collector ships REAL cluster pod stdout (not merely its own startup logs), launch a short-lived pod in a dedicated test namespace (`otel-e2e`) that echoes a unique marker (`OTEL-E2E-MARKER-LOGSHIP`) on stdout — brand-new workload output the collector must tail from `/var/log/pods` — then query Loki for that exact marker scoped to the test namespace. The OTLP-derived namespace label in Loki is `k8s_namespace_name` (Loki sanitizes the OTel `k8s.namespace.name` attribute by replacing dots with underscores). Use a `count_over_time` LogQL query with a line filter (`|= "OTEL-E2E-MARKER-LOGSHIP"`) over the last 5m and assert a non-empty result, wrapped in a bounded retry loop because OTLP ingestion is asynchronous. Clean up the throwaway pod and namespace at the end.
 
 **Steps**
 
 - [ ] Create `tests/e2e/otel-loki-logs/00-cmd.yaml` with:
 
 ```yaml
-# Assert the OTel collector is actually shipping pod stdout into Loki:
-# query Loki for log lines labelled with the heimdall namespace.
+# Assert the OTel collector ships REAL cluster pod stdout into Loki (not merely
+# its own startup logs): launch a throwaway pod that emits a unique marker line,
+# then query Loki for that exact marker and assert it was ingested.
 apiVersion: kuttl.dev/v1beta1
 kind: TestStep
 commands:
   - script: |
       set -e
 
+      MARKER="OTEL-E2E-MARKER-LOGSHIP"
+      TEST_NS="otel-e2e"
+      MARKER_POD="otel-marker"
+      QUERY_POD="loki-otel-client"
+
+      # Always tear down the throwaway workload, even on failure.
+      cleanup() {
+        kubectl delete pod "$QUERY_POD" -n heimdall --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        kubectl delete namespace "$TEST_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      }
+      trap cleanup EXIT
+
       LOKI_SVC=$(kubectl get svc -n heimdall -l app.kubernetes.io/name=loki \
         -o jsonpath='{.items[0].metadata.name}')
-
       if [ -z "$LOKI_SVC" ]; then
         echo "FAIL: No Loki service found"
         exit 1
       fi
       echo "Found Loki service: $LOKI_SVC"
 
-      kubectl delete pod loki-otel-client -n heimdall --ignore-not-found --wait=true
+      # 1. Launch a short-lived pod in a dedicated namespace that echoes a unique
+      #    marker on stdout. This is brand-new workload output the collector must
+      #    tail from /var/log/pods — it can't be confused with the collector's
+      #    own logs, so a hit proves real pod-stdout shipping.
+      kubectl create namespace "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f -
+      kubectl delete pod "$MARKER_POD" -n "$TEST_NS" --ignore-not-found --wait=true
+      kubectl run "$MARKER_POD" -n "$TEST_NS" \
+        --image=busybox:1.36 --restart=Never \
+        --command -- sh -c "echo $MARKER; sleep 600"
+      kubectl wait --for=condition=Ready pod/"$MARKER_POD" -n "$TEST_NS" --timeout=60s
+      echo "Marker pod running in $TEST_NS; emitted $MARKER"
 
-      # LogQL: count log lines from the heimdall namespace over the last 5m.
-      # OTLP resource attribute k8s.namespace.name is stored by Loki as the
-      # stream label k8s_namespace_name (dots -> underscores).
-      QUERY='count_over_time({k8s_namespace_name="heimdall"}[5m])'
-      URL="http://${LOKI_SVC}.heimdall.svc:3100/loki/api/v1/query?query=$(printf %s "$QUERY" | sed 's/ /%20/g;s/{/%7B/g;s/}/%7D/g;s/"/%22/g;s/\[/%5B/g;s/\]/%5D/g')"
+      # 2. Query Loki for the marker, scoped to the test namespace. OTLP resource
+      #    attribute k8s.namespace.name is stored by Loki as the stream label
+      #    k8s_namespace_name (dots -> underscores). Retry: OTLP ingestion is async.
+      QUERY="count_over_time({k8s_namespace_name=\"$TEST_NS\"} |= \"$MARKER\" [5m])"
+      ENC=$(printf %s "$QUERY" | sed 's/ /%20/g;s/{/%7B/g;s/}/%7D/g;s/"/%22/g;s/\[/%5B/g;s/\]/%5D/g;s/|/%7C/g;s/=/%3D/g')
+      URL="http://${LOKI_SVC}.heimdall.svc:3100/loki/api/v1/query?query=${ENC}"
 
-      kubectl run loki-otel-client --namespace heimdall \
-        --image=curlimages/curl:latest --restart=Never \
-        --command -- curl -sf "$URL"
+      FOUND=0
+      for attempt in $(seq 1 20); do
+        kubectl delete pod "$QUERY_POD" -n heimdall --ignore-not-found --wait=true
+        kubectl run "$QUERY_POD" -n heimdall \
+          --image=curlimages/curl:latest --restart=Never \
+          --command -- curl -sf "$URL"
 
-      DONE=0
-      for i in $(seq 1 30); do
-        PHASE=$(kubectl get pod loki-otel-client -n heimdall -o jsonpath='{.status.phase}' 2>/dev/null)
-        if [ "$PHASE" = "Succeeded" ]; then DONE=1; break; fi
-        if [ "$PHASE" = "Failed" ]; then
-          echo "FAIL: Loki query pod failed"
-          kubectl logs loki-otel-client -n heimdall
-          kubectl delete pod loki-otel-client -n heimdall --ignore-not-found
-          exit 1
+        # Wait for the query pod to finish this attempt.
+        for i in $(seq 1 30); do
+          PHASE=$(kubectl get pod "$QUERY_POD" -n heimdall -o jsonpath='{.status.phase}' 2>/dev/null)
+          [ "$PHASE" = "Succeeded" ] && break
+          [ "$PHASE" = "Failed" ] && break
+          sleep 2
+        done
+
+        RESULT=$(kubectl logs "$QUERY_POD" -n heimdall 2>/dev/null || true)
+        echo "Attempt $attempt — Loki response: $RESULT"
+
+        # A non-empty "result" array means Loki indexed at least one line that
+        # carries our unique marker under the test namespace label.
+        if echo "$RESULT" | grep -q '"status":"success"' \
+           && echo "$RESULT" | grep -q '"result":\[' \
+           && ! echo "$RESULT" | grep -q '"result":\[\]'; then
+          FOUND=1
+          break
         fi
-        sleep 2
+        sleep 6
       done
 
-      if [ "$DONE" -eq 0 ]; then
-        echo "FAIL: Loki query pod did not complete within timeout"
-        kubectl logs loki-otel-client -n heimdall 2>/dev/null || true
-        kubectl delete pod loki-otel-client -n heimdall --ignore-not-found
+      if [ "$FOUND" -ne 1 ]; then
+        echo "FAIL: marker '$MARKER' from namespace '$TEST_NS' never appeared in Loki — the collector is not shipping real pod stdout"
         exit 1
       fi
-
-      RESULT=$(kubectl logs loki-otel-client -n heimdall)
-      echo "Loki query response: $RESULT"
-      kubectl delete pod loki-otel-client -n heimdall --ignore-not-found
-
-      # A non-empty "result" array means the collector has shipped logs that
-      # Loki indexed under the heimdall namespace label.
-      if echo "$RESULT" | grep -q '"status":"success"' && echo "$RESULT" | grep -q '"result":\['; then
-        if echo "$RESULT" | grep -q '"result":\[\]'; then
-          echo "FAIL: Loki returned an empty result — no heimdall logs ingested via OTLP yet"
-          exit 1
-        fi
-        echo "PASS: Loki has heimdall-namespace logs shipped by the OTel collector"
-      else
-        echo "FAIL: Loki query did not return a successful non-empty result"
-        exit 1
-      fi
+      echo "PASS: marker '$MARKER' shipped by the OTel collector and indexed in Loki"
 ```
 
-- [ ] Run it pre-deploy to confirm it FAILS for the right reason: `bash test.sh --test otel-loki-logs`. Expect either `empty result` or a query failure — both are the red state (no collector shipping logs yet).
+- [ ] Run it pre-deploy to confirm it FAILS for the right reason: `bash test.sh --test otel-loki-logs`. Expect `FAIL: marker 'OTEL-E2E-MARKER-LOGSHIP' ... never appeared in Loki` — the red state (no collector shipping logs yet).
 
 ---
 
@@ -345,10 +362,10 @@ commands:
 - [ ] Stage and commit the Composition change plus the two kuttl tests using the workspace convention: `ws commit` (message e.g. `feat(heimdall): add OTel Collector log-shipper DaemonSet to Loki`). Do NOT use raw `git add`/`git commit`.
 - [ ] Push so ArgoCD can see it: `ws push`.
 - [ ] Wait for ArgoCD to sync the heimdall app: `kubectl -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced application/heimdall --timeout=300s` then confirm health: `kubectl -n argocd get application heimdall -o jsonpath='{.status.health.status}{"\n"}'`. Expect `Synced` and `Healthy`. (If selfHeal/auto-sync is slow, `kubectl -n argocd annotate application heimdall argocd.argoproj.io/refresh=hard --overwrite` to nudge a refresh — this is a refresh trigger, not a manual resource edit, so it does not violate the test-through-Git rule.)
-- [ ] Confirm Crossplane created and reconciled the Release: `kubectl get release heimdall-otel-collector -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}'`. Expect `True`.
+- [ ] Confirm Crossplane created and reconciled the Release (a `provider-helm` `Release` is a cluster-scoped CR, so no `-n` is needed here — unlike the namespaced `-n heimdall` commands below): `kubectl get release heimdall-otel-collector -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}'`. Expect `True`.
 - [ ] Confirm the DaemonSet is Ready on all nodes: `kubectl rollout status daemonset -n heimdall -l app.kubernetes.io/name=opentelemetry-collector --timeout=180s` and `kubectl get daemonset -n heimdall -l app.kubernetes.io/name=opentelemetry-collector`. Expect `DESIRED == READY` and equal to the node count.
 - [ ] Spot-check a collector pod started its pipeline without config errors: `kubectl logs -n heimdall -l app.kubernetes.io/name=opentelemetry-collector --tail=40`. Expect `Everything is ready. Begin running and processing data.` and an `otlphttp/loki` exporter starting — and NO `connection refused` / `404` errors against Loki.
-- [ ] Run the live assertions added in Tasks 4 and 5 — they must now go green: `bash test.sh --test otel-collector-running` (expect `PASS: collector Ready on all N node(s)`) and `bash test.sh --test otel-loki-logs` (expect `PASS: Loki has heimdall-namespace logs shipped by the OTel collector`).
+- [ ] Run the live assertions added in Tasks 4 and 5 — they must now go green: `bash test.sh --test otel-collector-running` (expect `PASS: collector Ready on all N node(s)`) and `bash test.sh --test otel-loki-logs` (expect `PASS: marker 'OTEL-E2E-MARKER-LOGSHIP' shipped by the OTel collector and indexed in Loki`).
 - [ ] Cross-check in Grafana Explore that logs are queryable end-to-end: the LogQL query `{k8s_namespace_name="heimdall"}` returns recent lines. (Optional manual confirmation; the kuttl test above is the gating check.)
 
 ---
@@ -378,7 +395,7 @@ commands:
 Confirm before declaring done:
 
 - [ ] **New step added, correctly placed:** `deploy-otel-collector` exists in `crossplane/composition.yaml` AFTER `deploy-loki` and BEFORE `auto-ready`; `auto-ready` is still the final step. (Task 3)
-- [ ] **Mirrors the deploy-loki skeleton:** provider-helm `Release` via `function-go-templating`, `source: Inline`, Release name `{{ .metadata.name }}-otel-collector`, unique `gotemplating.fn.crossplane.io/composition-resource-name: otel-collector` annotation. (Task 3)
+- [ ] **Mirrors the deploy-loki skeleton:** provider-helm `Release` via `function-go-templating`, `source: Inline`, Release name `{{ .observed.composite.resource.metadata.name }}-otel-collector`, unique `gotemplating.fn.crossplane.io/composition-resource-name: otel-collector` annotation. (Task 3)
 - [ ] **Chart pinned, not floating:** `opentelemetry-collector` from `https://open-telemetry.github.io/opentelemetry-helm-charts` at explicit version `0.159.0` (verified resolvable in Task 1). (Tasks 1, 3)
 - [ ] **Values match the locked design and are real chart keys** (render-verified in Task 2): `mode: daemonset`; `image.repository: otel/opentelemetry-collector-k8s` (k8s distro confirmed to bundle filelog + k8sattributes); `presets.logsCollection.enabled: true`; `presets.kubernetesAttributes.enabled: true`; a `config:` override adding an `otlphttp/loki` exporter and a logs pipeline that keeps the preset-injected filelog/k8sattributes. (Tasks 1-3)
 - [ ] **Loki target correct:** endpoint `http://heimdall-loki.heimdall.svc.cluster.local:3100/otlp` (exporter appends `/v1/logs`); `auth_enabled: false` so no `X-Scope-OrgID`; SingleBinary, no gateway. (Tasks 1, 3)
