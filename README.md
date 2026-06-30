@@ -74,8 +74,7 @@ claim only when overriding the cluster default.
 **Metrics:** Add standard Prometheus annotations or `ServiceMonitor` CRs to your
 deployment. Prometheus auto-scrapes based on the operator's configuration.
 
-**Logs:** Loki collects from the cluster automatically (via the canary/agent).
-Query in Grafana Explore with LogQL, e.g. `{namespace="your-app"}`.
+**Logs:** Nothing to wire up. The OpenTelemetry Collector DaemonSet (deployed by the composition) tails every pod's stdout cluster-wide from `/var/log/pods` and ships it to Loki via OTLP — your workloads just need to log to stdout. Query in Grafana Explore with LogQL using the OTLP-derived labels, e.g. `{k8s_namespace_name="your-app"}` (Loki stores the OTel `k8s.namespace.name` attribute with dots replaced by underscores).
 
 **Traces:** Point your app's OTLP exporter to:
 - gRPC: `heimdall-<id>-tempo.heimdall.svc:4317`

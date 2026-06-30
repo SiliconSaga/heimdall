@@ -288,6 +288,78 @@ spec:
                     memory: 1Gi
 
   # ──────────────────────────────────────────────────────────
+  # Step 3.4: OpenTelemetry Collector (log-shipper DaemonSet)
+  #
+  # Closes the heimdall log-collector gap. Runs one collector per node
+  # (DaemonSet) tailing /var/log/pods via the filelog receiver (wired by
+  # the logsCollection preset), enriches each record with pod/namespace/
+  # node metadata via the k8sattributes processor (wired by the
+  # kubernetesAttributes preset, which also creates the ClusterRole +
+  # ServiceAccount it needs), and ships to Loki's native OTLP ingest.
+  #
+  # Distro: image otel/opentelemetry-collector-k8s is the curated
+  # Kubernetes distribution that bundles filelog + k8sattributes; the
+  # core otel/opentelemetry-collector image does not include
+  # k8sattributes, so the k8s distro is required.
+  #
+  # Loki sink: auth_enabled is false and there is no gateway in front of
+  # the SingleBinary Loki, so no X-Scope-OrgID header is required. The
+  # otlphttp exporter appends /v1/logs to the endpoint, hitting Loki's
+  # /otlp/v1/logs. The chart deep-merges this config: block onto the
+  # preset-injected logs pipeline, so filelog/k8sattributes survive.
+  #
+  # Placed after deploy-loki (sink must exist) and before auto-ready
+  # (which must remain the final step).
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-otel-collector
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}-otel-collector
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: otel-collector
+          spec:
+            forProvider:
+              chart:
+                name: opentelemetry-collector
+                repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+                version: "0.159.0"
+              namespace: heimdall
+              values:
+                mode: daemonset
+                image:
+                  repository: otel/opentelemetry-collector-k8s
+                presets:
+                  logsCollection:
+                    enabled: true
+                  kubernetesAttributes:
+                    enabled: true
+                config:
+                  exporters:
+                    otlphttp/loki:
+                      endpoint: http://{{ .observed.composite.resource.metadata.name }}-loki.heimdall.svc.cluster.local:3100/otlp
+                  service:
+                    pipelines:
+                      logs:
+                        exporters:
+                          - otlphttp/loki
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 128Mi
+                  limits:
+                    cpu: 250m
+                    memory: 256Mi
+
+  # ──────────────────────────────────────────────────────────
   # Step 3.5: Self-health PrometheusRules
   #
   # Heimdall-scoped alerts that would have caught the 2026-05-15 GKE
