@@ -1,0 +1,82 @@
+# Assert the OTel collector ships REAL cluster pod stdout into Loki (not merely
+# its own startup logs): launch a throwaway pod that emits a unique marker line,
+# then query Loki for that exact marker and assert it was ingested.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      MARKER="OTEL-E2E-MARKER-LOGSHIP"
+      TEST_NS="otel-e2e"
+      MARKER_POD="otel-marker"
+      QUERY_POD="loki-otel-client"
+
+      # Always tear down the throwaway workload, even on failure.
+      cleanup() {
+        kubectl delete pod "$QUERY_POD" -n heimdall --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        kubectl delete namespace "$TEST_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      }
+      trap cleanup EXIT
+
+      LOKI_SVC=$(kubectl get svc -n heimdall -l app.kubernetes.io/name=loki \
+        -o jsonpath='{.items[0].metadata.name}')
+      if [ -z "$LOKI_SVC" ]; then
+        echo "FAIL: No Loki service found"
+        exit 1
+      fi
+      echo "Found Loki service: $LOKI_SVC"
+
+      # 1. Launch a short-lived pod in a dedicated namespace that echoes a unique
+      #    marker on stdout. This is brand-new workload output the collector must
+      #    tail from /var/log/pods — it can't be confused with the collector's
+      #    own logs, so a hit proves real pod-stdout shipping.
+      kubectl create namespace "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f -
+      kubectl delete pod "$MARKER_POD" -n "$TEST_NS" --ignore-not-found --wait=true
+      kubectl run "$MARKER_POD" -n "$TEST_NS" \
+        --image=busybox:1.36 --restart=Never \
+        --command -- sh -c "echo $MARKER; sleep 600"
+      kubectl wait --for=condition=Ready pod/"$MARKER_POD" -n "$TEST_NS" --timeout=60s
+      echo "Marker pod running in $TEST_NS; emitted $MARKER"
+
+      # 2. Query Loki for the marker, scoped to the test namespace. OTLP resource
+      #    attribute k8s.namespace.name is stored by Loki as the stream label
+      #    k8s_namespace_name (dots -> underscores). Retry: OTLP ingestion is async.
+      QUERY="count_over_time({k8s_namespace_name=\"$TEST_NS\"} |= \"$MARKER\" [5m])"
+      ENC=$(printf %s "$QUERY" | sed 's/ /%20/g;s/{/%7B/g;s/}/%7D/g;s/"/%22/g;s/\[/%5B/g;s/\]/%5D/g;s/|/%7C/g;s/=/%3D/g')
+      URL="http://${LOKI_SVC}.heimdall.svc:3100/loki/api/v1/query?query=${ENC}"
+
+      FOUND=0
+      for attempt in $(seq 1 20); do
+        kubectl delete pod "$QUERY_POD" -n heimdall --ignore-not-found --wait=true
+        kubectl run "$QUERY_POD" -n heimdall \
+          --image=curlimages/curl:latest --restart=Never \
+          --command -- curl -sf "$URL"
+
+        # Wait for the query pod to finish this attempt.
+        for i in $(seq 1 30); do
+          PHASE=$(kubectl get pod "$QUERY_POD" -n heimdall -o jsonpath='{.status.phase}' 2>/dev/null)
+          [ "$PHASE" = "Succeeded" ] && break
+          [ "$PHASE" = "Failed" ] && break
+          sleep 2
+        done
+
+        RESULT=$(kubectl logs "$QUERY_POD" -n heimdall 2>/dev/null || true)
+        echo "Attempt $attempt — Loki response: $RESULT"
+
+        # A non-empty "result" array means Loki indexed at least one line that
+        # carries our unique marker under the test namespace label.
+        if echo "$RESULT" | grep -q '"status":"success"' \
+           && echo "$RESULT" | grep -q '"result":\[' \
+           && ! echo "$RESULT" | grep -q '"result":\[\]'; then
+          FOUND=1
+          break
+        fi
+        sleep 6
+      done
+
+      if [ "$FOUND" -ne 1 ]; then
+        echo "FAIL: marker '$MARKER' from namespace '$TEST_NS' never appeared in Loki — the collector is not shipping real pod stdout"
+        exit 1
+      fi
+      echo "PASS: marker '$MARKER' shipped by the OTel collector and indexed in Loki"

@@ -1,0 +1,42 @@
+# Assert the OpenTelemetry Collector DaemonSet is deployed and Ready on all nodes
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      # Find the collector DaemonSet by its chart label.
+      # Use {.items[*]...} not {.items[0]...}: the [0] index errors with
+      # "array index out of bounds" on an empty list (which, under `set -e`,
+      # aborts before the graceful "No DaemonSet found" message below); the
+      # [*] range yields an empty string for an empty list, so the check works.
+      DS=$(kubectl get daemonset -n heimdall \
+        -l app.kubernetes.io/name=opentelemetry-collector \
+        -o jsonpath='{.items[*].metadata.name}')
+
+      if [ -z "$DS" ]; then
+        echo "FAIL: No opentelemetry-collector DaemonSet found in heimdall"
+        exit 1
+      fi
+
+      echo "Found collector DaemonSet: $DS"
+
+      DESIRED=$(kubectl get daemonset "$DS" -n heimdall \
+        -o jsonpath='{.status.desiredNumberScheduled}')
+      READY=$(kubectl get daemonset "$DS" -n heimdall \
+        -o jsonpath='{.status.numberReady}')
+
+      echo "DaemonSet $DS: ready=$READY desired=$DESIRED"
+
+      if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+        echo "FAIL: DaemonSet has no desired pods scheduled"
+        exit 1
+      fi
+
+      if [ "$READY" = "$DESIRED" ]; then
+        echo "PASS: collector Ready on all $DESIRED node(s)"
+      else
+        echo "FAIL: only $READY/$DESIRED collector pods Ready"
+        kubectl get pods -n heimdall -l app.kubernetes.io/name=opentelemetry-collector
+        exit 1
+      fi
