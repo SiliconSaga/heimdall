@@ -4,13 +4,20 @@
 apiVersion: kuttl.dev/v1beta1
 kind: TestStep
 commands:
-  - script: |
+  # Explicit timeout so kuttl doesn't kill the async-ingestion retry loop with
+  # the suite default mid-poll; the loop budget below (~60s marker-ready + 10
+  # attempts) fits comfortably under this.
+  - timeout: 300
+    script: |
       set -e
 
-      MARKER="OTEL-E2E-MARKER-LOGSHIP"
-      TEST_NS="otel-e2e"
-      MARKER_POD="otel-marker"
-      QUERY_POD="loki-otel-client"
+      # Per-run unique namespace + marker: a rerun can't collide with a still-
+      # Terminating namespace, and stale Loki data from a prior run can't produce
+      # a false positive (the query is scoped to this run's namespace + marker).
+      RUN_ID="$(date +%s)"
+      MARKER="OTEL-E2E-MARKER-${RUN_ID}"
+      TEST_NS="otel-e2e-${RUN_ID}"
+      QUERY_POD="loki-otel-client-${RUN_ID}"
 
       # Always tear down the throwaway workload, even on failure.
       cleanup() {
@@ -19,27 +26,30 @@ commands:
       }
       trap cleanup EXIT
 
+      # {.items[*]...} (not [0]) so an empty result is an empty string rather than
+      # a set -e-aborting "array index out of bounds"; take the first match.
       LOKI_SVC=$(kubectl get svc -n heimdall -l app.kubernetes.io/name=loki \
-        -o jsonpath='{.items[0].metadata.name}')
+        -o jsonpath='{.items[*].metadata.name}')
+      LOKI_SVC=${LOKI_SVC%% *}
       if [ -z "$LOKI_SVC" ]; then
         echo "FAIL: No Loki service found"
         exit 1
       fi
       echo "Found Loki service: $LOKI_SVC"
 
-      # 1. Launch a short-lived pod in a dedicated namespace that echoes a unique
-      #    marker on stdout. This is brand-new workload output the collector must
-      #    tail from /var/log/pods — it can't be confused with the collector's
-      #    own logs, so a hit proves real pod-stdout shipping.
-      kubectl create namespace "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f -
-      kubectl delete pod "$MARKER_POD" -n "$TEST_NS" --ignore-not-found --wait=true
-      kubectl run "$MARKER_POD" -n "$TEST_NS" \
+      # 1. Launch a short-lived pod in the fresh namespace that echoes the unique
+      #    marker on stdout — brand-new workload output the collector must tail
+      #    from /var/log/pods, so a hit proves real pod-stdout shipping. The
+      #    marker is single-quoted inside the container command to avoid any
+      #    word-splitting on unexpected characters.
+      kubectl create namespace "$TEST_NS"
+      kubectl run otel-marker -n "$TEST_NS" \
         --image=busybox:1.36 --restart=Never \
-        --command -- sh -c "echo $MARKER; sleep 600"
-      kubectl wait --for=condition=Ready pod/"$MARKER_POD" -n "$TEST_NS" --timeout=60s
+        --command -- sh -c "echo '$MARKER'; sleep 600"
+      kubectl wait --for=condition=Ready pod/otel-marker -n "$TEST_NS" --timeout=60s
       echo "Marker pod running in $TEST_NS; emitted $MARKER"
 
-      # 2. Query Loki for the marker, scoped to the test namespace. OTLP resource
+      # 2. Query Loki for the marker, scoped to the fresh namespace. OTLP resource
       #    attribute k8s.namespace.name is stored by Loki as the stream label
       #    k8s_namespace_name (dots -> underscores). Retry: OTLP ingestion is async.
       QUERY="count_over_time({k8s_namespace_name=\"$TEST_NS\"} |= \"$MARKER\" [5m])"
@@ -47,14 +57,15 @@ commands:
       URL="http://${LOKI_SVC}.heimdall.svc:3100/loki/api/v1/query?query=${ENC}"
 
       FOUND=0
-      for attempt in $(seq 1 20); do
+      for attempt in $(seq 1 10); do
         kubectl delete pod "$QUERY_POD" -n heimdall --ignore-not-found --wait=true
+        # --max-time bounds a hung curl so the poll below can't stall silently.
         kubectl run "$QUERY_POD" -n heimdall \
           --image=curlimages/curl:latest --restart=Never \
-          --command -- curl -sf "$URL"
+          --command -- curl -sf --max-time 10 "$URL"
 
         # Wait for the query pod to finish this attempt.
-        for i in $(seq 1 30); do
+        for i in $(seq 1 8); do
           PHASE=$(kubectl get pod "$QUERY_POD" -n heimdall -o jsonpath='{.status.phase}' 2>/dev/null)
           [ "$PHASE" = "Succeeded" ] && break
           [ "$PHASE" = "Failed" ] && break
@@ -72,7 +83,7 @@ commands:
           FOUND=1
           break
         fi
-        sleep 6
+        sleep 5
       done
 
       if [ "$FOUND" -ne 1 ]; then

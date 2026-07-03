@@ -310,6 +310,13 @@ spec:
   #
   # Placed after deploy-loki (sink must exist) and before auto-ready
   # (which must remain the final step).
+  #
+  # Scope: this DaemonSet tails EVERY namespace's pod stdout cluster-wide —
+  # that breadth is the point (it closes the platform-wide log-collector gap),
+  # and the sink is the private in-cluster Loki (no external egress). Logs may
+  # therefore carry secrets/PII that apps write to stdout; treat Loki access
+  # accordingly. A per-namespace filelog exclude or a redaction/filter
+  # processor is the future enhancement if a namespace must be withheld.
   # ──────────────────────────────────────────────────────────
   - step: deploy-otel-collector
     functionRef:
@@ -354,10 +361,13 @@ spec:
                 resources:
                   requests:
                     cpu: 50m
-                    memory: 128Mi
+                    memory: 256Mi
                   limits:
                     cpu: 250m
-                    memory: 256Mi
+                    # Headroom for the filelog receiver's buffers + the
+                    # k8sattributes metadata cache under real cluster log
+                    # volume; 256Mi risked OOMKill (silent log-shipping gaps).
+                    memory: 512Mi
 
   # ──────────────────────────────────────────────────────────
   # Step 3.5: Self-health PrometheusRules
