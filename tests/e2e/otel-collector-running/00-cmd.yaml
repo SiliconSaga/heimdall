@@ -1,0 +1,52 @@
+# Assert the OpenTelemetry Collector DaemonSet is deployed and Ready on all nodes
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      # Find the collector DaemonSet by its chart label.
+      # Use {.items[*]...} not {.items[0]...}: the [0] index errors with
+      # "array index out of bounds" on an empty list (which, under `set -e`,
+      # aborts before the graceful "No DaemonSet found" message below); the
+      # [*] range yields a space-separated list (empty string for an empty list).
+      DS=$(kubectl get daemonset -n heimdall \
+        -l app.kubernetes.io/name=opentelemetry-collector \
+        -o jsonpath='{.items[*].metadata.name}')
+
+      if [ -z "$DS" ]; then
+        echo "FAIL: No opentelemetry-collector DaemonSet found in heimdall"
+        exit 1
+      fi
+
+      # The label should select exactly one DaemonSet; more than one is an
+      # ambiguous match that would break the per-name `kubectl get` calls below.
+      # (Unquoted expansion is intentional here — word-split to count tokens.)
+      # shellcheck disable=SC2086
+      set -- $DS
+      if [ "$#" -gt 1 ]; then
+        echo "FAIL: expected one opentelemetry-collector DaemonSet, found $#: $DS"
+        exit 1
+      fi
+      DS=$1
+      echo "Found collector DaemonSet: $DS"
+
+      # Retry: on a fresh rollout the pods pull images before numberReady catches
+      # up to desiredNumberScheduled, so a one-shot check would spuriously fail.
+      for attempt in $(seq 1 18); do
+        DESIRED=$(kubectl get daemonset "$DS" -n heimdall \
+          -o jsonpath='{.status.desiredNumberScheduled}')
+        READY=$(kubectl get daemonset "$DS" -n heimdall \
+          -o jsonpath='{.status.numberReady}')
+        echo "Attempt $attempt — DaemonSet $DS: ready=${READY:-0} desired=${DESIRED:-0}"
+
+        if [ -n "$DESIRED" ] && [ "$DESIRED" -ge 1 ] && [ "$READY" = "$DESIRED" ]; then
+          echo "PASS: collector Ready on all $DESIRED node(s)"
+          exit 0
+        fi
+        sleep 10
+      done
+
+      echo "FAIL: collector not Ready on all nodes within timeout (ready=${READY:-0} desired=${DESIRED:-0})"
+      kubectl get pods -n heimdall -l app.kubernetes.io/name=opentelemetry-collector
+      exit 1

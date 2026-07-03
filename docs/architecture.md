@@ -6,7 +6,7 @@ For quickstart and usage, see the [README](../README.md).
 ## Composition Pipeline
 
 The Crossplane Composition (`crossplane/composition.yaml`) uses
-`function-go-templating` to deploy and configure six steps:
+`function-go-templating` to deploy and configure seven steps:
 
 1. **kube-prometheus-stack** (Provider-Helm Release) — Prometheus, Grafana,
    AlertManager, node-exporter, kube-state-metrics, default dashboards. AlertManager is configured with a severity-routing tree: the default route is blackholed (a `null` receiver), `severity = "warning"` routes to `ntfy-warning`, and `severity = "critical"` routes to `ntfy-critical` (1 h repeat) plus, optionally, Knarr (SMS/call escalation) when `knarrWebhookUrl` is set on the Claim. Delivery posts to ntfy with `?template=heimdall`, which maps severity→priority (DND override for `critical`, quiet `warning`) and formats the body server-side; see [Alerting & Notification](#alerting--notification) below.
@@ -14,19 +14,22 @@ The Crossplane Composition (`crossplane/composition.yaml`) uses
    with filesystem storage and TSDB schema v13.
 3. **Tempo** (Provider-Helm Release) — Distributed tracing with local storage,
    OTLP receivers on gRPC (4317) and HTTP (4318).
-4. **Self-health PrometheusRules** (Provider-Kubernetes Object) — Heimdall-scoped
+4. **OpenTelemetry Collector** (Provider-Helm Release) — log-shipper DaemonSet (one collector per node) from the `otel/opentelemetry-collector-k8s` distro. The `logsCollection` preset wires the filelog receiver tailing `/var/log/pods`, the `kubernetesAttributes` preset wires the k8sattributes processor (plus the ClusterRole/ServiceAccount it needs) to enrich each record with pod/namespace/node metadata, and a `config:` override adds an `otlphttp` exporter to Loki's native `/otlp` ingest (`auth_enabled: false`, no `X-Scope-OrgID` tenant header — SingleBinary Loki, no gateway). This is the log-collection path: workloads need only log to stdout.
+5. **Self-health PrometheusRules** (Provider-Kubernetes Object) — Heimdall-scoped
    alerts: PVC fill (warn at 80%, critical at 90%), Prometheus restart-storm,
    WAL corruption, TSDB compaction failures. Labelled with
    `release: <name>-kube-prometheus` so kube-prometheus-stack's default rule
    selector picks them up. Designed for the
    [2026-05-15 incident class](https://github.com/SiliconSaga/yggdrasil/blob/main/docs/plans/2026-05-19-heimdall-monitoring-design.md);
    AlertManager notification routing follows in a separate arc.
-5. **Ingress Routes** (Provider-Kubernetes Objects) — Traefik IngressRoutes for
+6. **Ingress Routes** (Provider-Kubernetes Objects) — Traefik IngressRoutes for
    Grafana and Prometheus. The base domain defaults to
    `EnvironmentConfig/cluster-identity` (loaded into the pipeline context by
    `function-environment-configs`); the Claim's `domain` parameter is an
    optional override.
-6. **Auto-ready** — marks the composite resource Ready when all children are.
+7. **Auto-ready** — marks the composite resource Ready when all children are.
+
+Any future consumer that wants its metrics scraped must label its `ServiceMonitor` `release: <name>-kube-prometheus` (e.g. `heimdall-<id>-kube-prometheus`) so the kube-prometheus-stack operator's default selector discovers it — the same label fact documented above for the self-health PrometheusRules. No such consumer ships in this composition.
 
 Grafana data sources are wired inline in the kube-prometheus-stack values:
 - Prometheus (default, auto-discovered by sidecar)
