@@ -82,6 +82,14 @@ spec:
                       limits:
                         cpu: "1"
                         memory: 2Gi
+                    # Discover ServiceMonitors/PodMonitors cluster-wide regardless of the
+                    # `release` label. The chart default (…NilUsesHelmValues: true) scopes
+                    # discovery to `release: <name>-kube-prometheus`, but this Prometheus's
+                    # release name is composite-suffixed (heimdall-<xrsuffix>-kube-prometheus),
+                    # random per cluster — so app ServiceMonitors (e.g. kubicvalheim) can't
+                    # know it at author time. A platform Prometheus watches everything given.
+                    serviceMonitorSelectorNilUsesHelmValues: false
+                    podMonitorSelectorNilUsesHelmValues: false
                 grafana:
                   enabled: true
                   adminPassword: admin
