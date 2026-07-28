@@ -1,0 +1,62 @@
+# Assert the probe pipeline is wired end to end: the Probe CR is discovered and
+# producing probe_success samples, and the alert rules that consume them are
+# loaded. Both halves matter — a probe with no rule is invisible, and a rule
+# with no probe never fires. The 2026-07-27 Artifactory outage was missed
+# because no rule existed at critical severity for user-visible reachability.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      PROM_POD=$(kubectl get pods -n heimdall -l app.kubernetes.io/name=prometheus \
+        -o jsonpath='{.items[*].metadata.name}')
+
+      if [ -z "$PROM_POD" ]; then
+        echo "FAIL: No Prometheus pod found"
+        exit 1
+      fi
+      # shellcheck disable=SC2086
+      set -- $PROM_POD
+      PROM_POD=$1
+      echo "Found Prometheus pod: $PROM_POD"
+
+      # 1. The Probe CR must exist for the operator to translate into a scrape job.
+      if ! kubectl get probe artifactory -n heimdall >/dev/null 2>&1; then
+        echo "FAIL: Probe/artifactory not found in heimdall"
+        exit 1
+      fi
+      echo "Probe/artifactory present"
+
+      # 2. probe_success must be present. Retry: the operator has to reload
+      #    Prometheus config and the first scrape has to land.
+      for attempt in $(seq 1 18); do
+        RESULT=$(kubectl exec -n heimdall "$PROM_POD" -c prometheus -- \
+          wget -qO- 'http://localhost:9090/api/v1/query?query=probe_success' 2>/dev/null || true)
+        COUNT=$(echo "$RESULT" | grep -o '"__name__":"probe_success"' | wc -l)
+        echo "Attempt $attempt — probe_success series: $COUNT"
+        if [ "$COUNT" -gt 0 ]; then
+          break
+        fi
+        sleep 10
+      done
+
+      if [ "$COUNT" -lt 1 ]; then
+        echo "FAIL: no probe_success series — Probe not discovered or blackbox unreachable"
+        exit 1
+      fi
+
+      # 3. The consuming alert rules must be loaded into Prometheus.
+      RULES=$(kubectl exec -n heimdall "$PROM_POD" -c prometheus -- \
+        wget -qO- http://localhost:9090/api/v1/rules 2>/dev/null)
+
+      for RULE in HeimdallWatchedServiceDown HeimdallWatchedServiceSlow HeimdallCertExpiringSoon; do
+        if echo "$RULES" | grep -q "\"name\":\"$RULE\""; then
+          echo "  rule loaded: $RULE"
+        else
+          echo "FAIL: alert rule $RULE not loaded"
+          exit 1
+        fi
+      done
+
+      echo "PASS: probe discovered ($COUNT series) and all three probe alert rules loaded"

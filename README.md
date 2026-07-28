@@ -80,6 +80,50 @@ deployment. Prometheus auto-scrapes based on the operator's configuration.
 - gRPC: `heimdall-<id>-tempo.heimdall.svc:4317`
 - HTTP: `heimdall-<id>-tempo.heimdall.svc:4318`
 
+## Watching a service
+
+Metrics, logs and traces all describe what is happening *inside* the cluster. To
+answer "is the URL people actually visit responding?", add a `Probe`:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: my-service
+  namespace: heimdall
+spec:
+  prober:
+    url: heimdall-blackbox.heimdall.svc:9115
+  module: http_2xx
+  interval: 30s
+  targets:
+    staticConfig:
+      static:
+        - https://my-service.example.org/healthz
+```
+
+`heimdall-blackbox.heimdall.svc:9115` is a fixed name on every cluster — use it
+verbatim. (The Blackbox Exporter's own Service carries the random per-cluster
+composite suffix, so it can't be referenced from another repo; this alias exists
+precisely so a probe is a file you write without consulting the cluster.)
+
+Three alerts come with it automatically, no extra wiring:
+
+| Alert | Fires when | Severity |
+|-------|-----------|----------|
+| `HeimdallWatchedServiceDown` | Probe fails for 3 minutes | **critical** → ntfy priority 5 |
+| `HeimdallWatchedServiceSlow` | Response exceeds 5s for 10 minutes | warning |
+| `HeimdallCertExpiringSoon` | TLS cert expires within 14 days | warning |
+
+Point the probe at a *readiness* endpoint rather than the site root where one
+exists. Many applications serve a shell page early in startup, which would
+report healthy while the service is still unusable.
+
+**Why probe failure is the critical tier.** Internal signals stay at `warning`
+and inform diagnosis; black-box unreachability is what earns `critical` and the
+Do-Not-Disturb bypass. That split is deliberate — it is the difference between
+"a pod is restarting" (often uninteresting) and "users are affected right now".
+
 ## Current status
 
 Phase 1 — homelab with filesystem storage, no SSO. See

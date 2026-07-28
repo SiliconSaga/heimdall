@@ -1,0 +1,11 @@
+# Offline-render stand-in for the GKE cluster-identity EnvironmentConfig
+# (in-cluster it is applied by nordri layer4-fundamentals). Swap for the
+# homelab file to verify the other side of the coreDns conditional.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: cluster-identity
+data:
+  domain: cmdbee.org
+  environment: gke
+  storageClass: standard-rwo
