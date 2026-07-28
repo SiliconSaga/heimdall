@@ -36,7 +36,7 @@ A related discovery constrains any pod-state-based approach: **pods in `CrashLoo
 
 ## Architecture
 
-Five sections. Sections 1 and 2 are the first implementable increment and together make the ntfy channel trustworthy enough to unmute.
+Six sections. Sections 1 and 2 are the first implementable increment and together make the ntfy channel trustworthy enough to unmute.
 
 ### Section 1 — Alert hygiene
 
@@ -143,10 +143,39 @@ Route it instead to an external heartbeat service (healthchecks.io free tier or 
 
 While the cluster is healthy the heartbeat is pinged every five minutes. If the cluster, Prometheus, or AlertManager dies, the pings stop and the external service raises the alarm. This is the only element of the design that survives total cluster loss without a second site, and it costs one receiver plus a URL.
 
+### Section 6 — Request right-sizing loop
+
+The cluster runs under a committed-use agreement, so node shape and count are fixed. Packing density is the only capacity lever available, which makes compressing resource requests the whole game — and makes a feedback loop mandatory rather than optional.
+
+The reason it is mandatory: **CPU requests only bite under contention.** On an idle cluster, cutting a request looks free and behaves identically. It stops behaving identically during the one hour a year that the node is busy, and the pod that lost the CFS share race is the one that fails. Artifactory requested `50m` for 605 days without incident and then could not boot at all. Compression without a watch loop does not avoid that outcome, it defers it.
+
+**Tiered targets, not uniform compression.** Flattening everything to a floor is what produces the failure above.
+
+| Tier | Workloads | Request target |
+|---|---|---|
+| Must-not-starve | User-facing and control plane — Artifactory, Gitea, ingress, ArgoCD | ≈ p95 observed |
+| Idle controllers | Operators, webhooks, Crossplane functions | Floor, 25–50m |
+| Hand-tuned | Jenkins | Excluded — spiky by nature, owner-managed |
+
+**Contention signals.** All of these are already collected; none needs new instrumentation. Together they answer "which service is struggling under its new request":
+
+- `rate(container_cpu_cfs_throttled_periods_total[…]) / rate(container_cpu_cfs_periods_total[…])` — throttling ratio. Note this is driven by *limits*, not requests, so it diagnoses a different axis than the compression itself.
+- `changes(kube_pod_container_status_restarts_total[…])` — the restart-anomaly signal from Section 3.
+- `kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}` — the unambiguous marker of an under-set **memory** request.
+- Probe failures from the kubelet `/metrics/probes` endpoint — the earliest warning, and the signal that would have caught both Artifactory and ArgoCD hours before anything else.
+- `kube_pod_status_phase{phase="Pending"}` plus `FailedScheduling` events — over-compression surfacing as unschedulable pods rather than slow ones.
+
+**Weekly check with a git-backed record.** A scheduled weekly run queries p95 and max CPU and memory per workload over the trailing 7 days, gathers the signals above, and appends a dated row per workload to a versioned file in this repo. Prometheus retains 7 days; the file is what turns that rolling window into months of trend.
+
+Deliberately **not** Thanos, despite the `thanosEnabled` stub already in the XRD. Thanos requires an object-storage backend, which re-opens the parked garage-vs-seaweedfs evaluation, to answer a question amounting to roughly twenty numbers a week. A git-backed file is diffable, reviewable, survives cluster rebuilds, needs no new infrastructure, and lets a human read a month of drift in one screen. If long-range high-resolution history is later wanted for its own sake, Thanos remains available and this file does not conflict with it.
+
+Run it as a scheduled agent rather than an in-cluster CronJob to begin with. The interesting output is not the numbers but the judgment about them — which workload changed shape, whether a spike was real load or a neighbour's noise, what to adjust next. That is prose a CronJob cannot write. Graduate it to a CronJob if it ever becomes purely mechanical.
+
 ## What this design does not do
 
 - It does not add Thanos, object storage, OIDC, or Pyroscope. Those remain on the Heimdall buildout backlog and are independent of alert quality.
-- It does not attempt to predict failures. The requests-versus-usage panel supports capacity reasoning, but no forecasting or anomaly-detection rules are proposed; the immediate gap is detecting a total outage, not anticipating one.
+- It does not attempt to forecast failures. Section 6 observes and reacts on a weekly cadence; no predictive modelling or anomaly-detection rules are proposed. The immediate gap is detecting a total outage, not anticipating one.
+- It does not automate request changes. Section 6 produces evidence and judgment; editing a chart value stays a human decision through the normal review flow. No VPA, no auto-apply.
 - It does not fix the two hot-patches applied during the incident. Artifactory's CPU limit and startup probe thresholds are owned by the legacy ArgoCD, and the new ArgoCD's resource requests are owned by nordri's `bootstrap.sh`. Both will revert. They are tracked separately.
 
 ## Testing
@@ -170,4 +199,5 @@ The delivery test is human-gated: it must reach a physical phone with Do Not Dis
 2. Section 2 Blackbox Exporter, the Artifactory probe, and `HeimdallWatchedServiceDown`. Verify with the deliberate-failure delivery test.
 3. Unmute ntfy on the phone. This is the real acceptance gate for the whole increment.
 4. Section 3 dashboard.
-5. Sections 4 and 5 as separate follow-on increments.
+5. Section 6 right-sizing loop — start the weekly check early, even before the dashboard, so the observations file begins accumulating trend while the rest is built. Its value compounds with elapsed time, so it is the one section that is cheaper to start sooner.
+6. Sections 4 and 5 as separate follow-on increments.
