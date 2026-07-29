@@ -42,6 +42,26 @@ Three patterns to shape the downstream payload — pick by where templating live
 2. **Server-side templating on the receiver** (when the receiver already has a richer template system). Example: ntfy's `--template-dir` + `?template=<name>` formats title/message/priority server-side; AM just posts its default envelope. Useful if you want to reuse the receiver's templates from other sources too.
 3. **A small webhook bridge** (rare — only when the transformation needs logic neither AM templates nor the receiver can express: external lookups, fan-out to multiple downstreams, schema diffing). A ~30-line Go/Python shim. Off-the-shelf: `FXinnovation/alertmanager-webhook-template`, or hand-roll. Adds an extra component to operate; avoid unless you actually need it.
 
+## Severity Is a Budget, Not a Label
+
+The failure mode that actually breaks alerting is not a misrouted alert — it is a correctly-routed one nobody reads.
+
+A permanently-firing `critical` does not degrade gracefully. Whatever bypass you attached to that tier (DND override, phone call, pager) fires forever, so the human mutes the channel — and every real alert afterwards is lost, including ones the pipeline delivers perfectly. Delivery metrics look healthy throughout: `alertmanager_notifications_total` climbing, `alertmanager_notifications_failed_total` at zero, and no signal reaching anyone.
+
+Treat `critical` as a fixed budget spent on alerts that are **actionable, rare, and cannot fire indefinitely**. Anything that can be permanently true is by definition not critical.
+
+**The hygiene invariant.** On a healthy cluster this returns empty:
+
+```promql
+ALERTS{alertstate="firing", severity="critical"}
+```
+
+A permanently non-empty result means the tier has been devalued. Check it before wiring any new high-priority delivery path, and periodically afterwards — it is cheap and it is the single best predictor of whether the channel will still be trusted in six months.
+
+**Sequencing.** Fix noise *before* enabling delivery, never after. Once the channel is muted, unmuting is a human decision that lags the fix by however long it takes them to trust it again.
+
+**A related trap:** if the delivery target itself is unavailable (a cold-standby receiver at `replicas: 0`, say), AlertManager raises `AlertmanagerClusterFailedToSendAlerts` at `critical` — which then also cannot be delivered. Environments that deliberately run a dormant receiver should route or inhibit that alert, or accept a permanent critical that contradicts the invariant above.
+
 ## `amtool` Toolbox
 
 ```bash

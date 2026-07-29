@@ -116,6 +116,15 @@ spec:
                     # know it at author time. A platform Prometheus watches everything given.
                     serviceMonitorSelectorNilUsesHelmValues: false
                     podMonitorSelectorNilUsesHelmValues: false
+                    # Probes need the same cluster-wide discovery for the same
+                    # reason, and were missed when #11 fixed the other two.
+                    # Left at the default, probeSelector pins to
+                    # `release: heimdall-<xrsuffix>-kube-prometheus` — a suffix
+                    # that is random per cluster and therefore unknowable to a
+                    # Probe authored in another repo. Caught by testing on the
+                    # local cluster: serviceMonitorSelector rendered {} while
+                    # probeSelector still carried the matchLabels pin.
+                    probeSelectorNilUsesHelmValues: false
                 grafana:
                   enabled: true
                   adminPassword: admin
@@ -652,7 +661,11 @@ spec:
                   name: artifactory
                   namespace: heimdall
                   labels:
-                    release: {{ $name }}-kube-prometheus
+                    # Deliberately NO `release` label: with
+                    # probeSelectorNilUsesHelmValues false above, discovery is
+                    # cluster-wide, and this probe is meant to be the worked
+                    # example that other repos copy. Requiring a label they
+                    # cannot know would defeat the primitive.
                     heimdall.siliconsaga.org/watched: "true"
                 spec:
                   prober:
