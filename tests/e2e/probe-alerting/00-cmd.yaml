@@ -30,9 +30,13 @@ commands:
 
       # 2. probe_success must be present. Retry: the operator has to reload
       #    Prometheus config and the first scrape has to land.
+      # Query the Artifactory probe specifically. A bare probe_success query
+      # would pass on any unrelated probe in the cluster, so this test could
+      # go green while the probe it claims to cover is undiscovered.
+      QUERY='probe_success%7Bjob%3D%22probe%2Fheimdall%2Fartifactory%22%7D'
       for attempt in $(seq 1 18); do
         RESULT=$(kubectl exec -n heimdall "$PROM_POD" -c prometheus -- \
-          wget -qO- 'http://localhost:9090/api/v1/query?query=probe_success' 2>/dev/null || true)
+          wget -qO- "http://localhost:9090/api/v1/query?query=${QUERY}" 2>/dev/null || true)
         COUNT=$(echo "$RESULT" | grep -o '"__name__":"probe_success"' | wc -l)
         echo "Attempt $attempt — probe_success series: $COUNT"
         if [ "$COUNT" -gt 0 ]; then
@@ -42,15 +46,27 @@ commands:
       done
 
       if [ "$COUNT" -lt 1 ]; then
-        echo "FAIL: no probe_success series — Probe not discovered or blackbox unreachable"
+        echo "FAIL: no probe_success series for Probe/artifactory — not discovered or blackbox unreachable"
         exit 1
       fi
+
+      # 2b. The `watched` label must reach the series, not just the CR metadata.
+      #     Severity selection depends on it: without it the probe silently
+      #     drops from critical to warning.
+      if ! echo "$RESULT" | grep -q '"watched":"true"'; then
+        echo "FAIL: probe_success for artifactory lacks the watched=\"true\" label"
+        echo "      (staticConfig.labels did not propagate — severity would silently downgrade)"
+        exit 1
+      fi
+      echo "watched label present on the series"
 
       # 3. The consuming alert rules must be loaded into Prometheus.
       RULES=$(kubectl exec -n heimdall "$PROM_POD" -c prometheus -- \
         wget -qO- http://localhost:9090/api/v1/rules 2>/dev/null)
 
-      for RULE in HeimdallWatchedServiceDown HeimdallWatchedServiceSlow HeimdallCertExpiringSoon; do
+      for RULE in HeimdallWatchedServiceDown HeimdallProbedServiceDown \
+                  HeimdallWatchedServiceSlow HeimdallCertExpiringSoon \
+                  HeimdallProbeScrapeFailing HeimdallProbePipelineDown; do
         if echo "$RULES" | grep -q "\"name\":\"$RULE\""; then
           echo "  rule loaded: $RULE"
         else
@@ -59,4 +75,4 @@ commands:
         fi
       done
 
-      echo "PASS: probe discovered ($COUNT series) and all three probe alert rules loaded"
+      echo "PASS: artifactory probe discovered + watched-labelled, all six probe alert rules loaded"

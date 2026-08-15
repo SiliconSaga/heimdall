@@ -73,9 +73,15 @@ kubeEtcd:              { enabled: false }
 
 ```bash
 helm template h kube-prometheus-stack --repo https://prometheus-community.github.io/helm-charts \
-  --version <ver> --set kubeControllerManager.enabled=false \
-  | grep -cE 'alert: (KubeControllerManagerDown|KubeSchedulerDown|KubeProxyDown)'
+  --version <ver> \
+  --set kubeControllerManager.enabled=false \
+  --set kubeScheduler.enabled=false \
+  --set kubeProxy.enabled=false \
+  --set kubeEtcd.enabled=false \
+  | grep -cE 'alert: (KubeControllerManagerDown|KubeSchedulerDown|KubeProxyDown|etcd)'
 ```
+
+Expect `0`. Include the `etcd` family in the grep — it is a separate rule set from the three `*Down` alerts and is easy to leave enabled while believing the job is done.
 
 **These fire on unmanaged clusters too.** The rules are usually described as a managed-K8s problem, but they also fire on rancher-desktop/k3s, which doesn't scrape-expose those components either. Disable unconditionally rather than branching on environment.
 

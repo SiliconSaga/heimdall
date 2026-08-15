@@ -515,16 +515,19 @@ spec:
                       annotations:
                         summary: {{ `Prometheus TSDB compaction failures on {{ $labels.instance }}` | quote }}
                         description: {{ `{{ $value }} compaction failures in the last hour. Often a precursor to disk pressure or storage backend issues.` | quote }}
-                  # Black-box probe alerts. HeimdallWatchedServiceDown is the
-                  # only rule in this stack that is deliberately critical on
-                  # behalf of a non-Heimdall service, because reachability from
-                  # outside is the one signal that unambiguously means "users
-                  # are affected right now".
+                  # Black-box probe alerts, in two tiers.
+                  #
+                  # Probe discovery is cluster-wide, so ANY Probe anywhere would
+                  # otherwise page at critical — the exact over-use of the tier
+                  # this work exists to stop. Criticality is therefore opt-in via
+                  # a `watched: "true"` label on the probe's staticConfig, which
+                  # (unlike a CR metadata label) actually propagates onto the
+                  # series. Unmarked probes still alert, at warning.
                   - name: heimdall.probes
                     interval: 30s
                     rules:
                     - alert: HeimdallWatchedServiceDown
-                      expr: probe_success == 0
+                      expr: probe_success{watched="true"} == 0
                       for: 3m
                       labels:
                         severity: critical
@@ -532,6 +535,36 @@ spec:
                       annotations:
                         summary: {{ `Watched service {{ $labels.instance }} is unreachable` | quote }}
                         description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. 3m rides out a rolling restart or brief node blip while still paging within minutes; the 2026-07-27 Artifactory outage would have fired here and stayed firing for 14 hours.` | quote }}
+                    - alert: HeimdallProbedServiceDown
+                      expr: probe_success{watched!="true"} == 0
+                      for: 3m
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Probed service {{ $labels.instance }} is unreachable` | quote }}
+                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. This probe is not marked watched, so it notifies quietly rather than piercing Do Not Disturb — add "watched: true" to its staticConfig labels to promote it to critical.` | quote }}
+                    # probe_success == 0 cannot fire if the series stops existing.
+                    # These two cover that blind spot: the exporter being
+                    # unscrapeable, or every probe series vanishing at once.
+                    - alert: HeimdallProbeScrapeFailing
+                      expr: up{job=~"probe/.+"} == 0
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Prometheus cannot scrape probe job {{ $labels.job }}` | quote }}
+                        description: {{ `The blackbox exporter is unreachable for this probe, so probe_success is stale or absent and the down-alerts above are blind. Check the heimdall-blackbox alias Service and the exporter pod.` | quote }}
+                    - alert: HeimdallProbePipelineDown
+                      expr: absent(probe_success)
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `No probe_success series exist at all` | quote }}
+                        description: {{ `Every black-box probe series has disappeared — the exporter, the Probe CRs, or probe discovery is broken. All service-reachability alerting is silently dead until this clears.` | quote }}
                     - alert: HeimdallWatchedServiceSlow
                       expr: probe_duration_seconds > 5
                       for: 10m
@@ -666,6 +699,10 @@ spec:
                     # cluster-wide, and this probe is meant to be the worked
                     # example that other repos copy. Requiring a label they
                     # cannot know would defeat the primitive.
+                    #
+                    # This CR-metadata label is descriptive only — it does NOT
+                    # reach the metric. The `watched` label that drives alert
+                    # severity lives in staticConfig.labels below.
                     heimdall.siliconsaga.org/watched: "true"
                 spec:
                   prober:
@@ -676,6 +713,10 @@ spec:
                     staticConfig:
                       static:
                       - https://artifactory.terasology.io/artifactory/api/system/ping
+                      # staticConfig labels DO land on the resulting series,
+                      # which is what makes severity selection possible.
+                      labels:
+                        watched: "true"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)

@@ -1,7 +1,7 @@
 # Alerting Hygiene and Service Probes — Design
 
 **Date:** 2026-07-27
-**Status:** Approved, not yet implemented
+**Status:** Sections 1 and 2 implemented; sections 3–6 designed only. Deployment and the human-gated delivery test remain outstanding — see [Testing](#testing).
 **Component:** heimdall
 
 ## Motivation

@@ -107,13 +107,44 @@ verbatim. (The Blackbox Exporter's own Service carries the random per-cluster
 composite suffix, so it can't be referenced from another repo; this alias exists
 precisely so a probe is a file you write without consulting the cluster.)
 
-Three alerts come with it automatically, no extra wiring:
+Alerts come with it automatically, no extra wiring:
 
 | Alert | Fires when | Severity |
 |-------|-----------|----------|
-| `HeimdallWatchedServiceDown` | Probe fails for 3 minutes | **critical** → ntfy priority 5 |
+| `HeimdallProbedServiceDown` | Probe fails for 3 minutes | warning → quiet push |
+| `HeimdallWatchedServiceDown` | Same, but only for opted-in probes | **critical** → priority 5 |
 | `HeimdallWatchedServiceSlow` | Response exceeds 5s for 10 minutes | warning |
 | `HeimdallCertExpiringSoon` | TLS cert expires within 14 days | warning |
+| `HeimdallProbeScrapeFailing` | Prometheus can't reach the exporter | **critical** |
+| `HeimdallProbePipelineDown` | No probe series exist at all | **critical** |
+
+### Opting in to critical
+
+A probe added with the snippet above notifies **quietly**. To promote it to the
+Do-Not-Disturb-piercing tier, add a `watched` label to its `staticConfig`:
+
+```yaml
+  targets:
+    staticConfig:
+      static:
+        - https://my-service.example.org/healthz
+      labels:
+        watched: "true"
+```
+
+Critical is opt-in rather than default because probe discovery is cluster-wide:
+without this, any probe anyone adds would page everybody at maximum priority,
+which is precisely how an alerting channel becomes noise and then gets muted.
+
+Note this label goes in **`spec.targets.staticConfig.labels`**, not the CR's
+`metadata.labels` — only the former lands on the resulting metric series, which
+is what the alert rules select on. A label in the wrong place fails silently: the
+probe still works, it just never reaches critical.
+
+The last two alerts exist because `probe_success == 0` cannot fire if the series
+stops existing at all. They cover the exporter going unscrapeable and the whole
+probe pipeline vanishing — the failure modes that would otherwise look like
+silence.
 
 Point the probe at a *readiness* endpoint rather than the site root where one
 exists. Many applications serve a shell page early in startup, which would
