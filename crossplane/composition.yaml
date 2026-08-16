@@ -557,7 +557,11 @@ spec:
                         summary: {{ `Prometheus cannot scrape probe job {{ $labels.job }}` | quote }}
                         description: {{ `The blackbox exporter is unreachable for this probe, so probe_success is stale or absent and the down-alerts above are blind. Check the heimdall-blackbox alias Service and the exporter pod.` | quote }}
                     - alert: HeimdallProbePipelineDown
-                      expr: absent(probe_success)
+                      # Scoped to Probe-generated jobs rather than bare
+                      # absent(probe_success): any other exporter emitting a
+                      # probe_success series would otherwise satisfy the check
+                      # and mask a genuinely dead Probe pipeline.
+                      expr: absent(probe_success{job=~"probe/.+"})
                       for: 5m
                       labels:
                         severity: critical
