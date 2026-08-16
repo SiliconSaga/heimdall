@@ -638,8 +638,6 @@ spec:
                 # probe.
                 serviceMonitor:
                   enabled: false
-            providerConfigRef:
-              name: helm-provider
           ---
           # A FIXED-NAME alias Service in front of the exporter.
           #
