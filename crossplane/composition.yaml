@@ -59,6 +59,32 @@ spec:
                 version: "82.16.0"
               namespace: heimdall
               values:
+                # ── Alert hygiene ──────────────────────────────────────────
+                # These four control-plane components are not scrape-exposed on
+                # EITHER environment: GKE hides the managed control plane, and
+                # rancher-desktop k3s does not expose them either. Their default
+                # rules therefore fire permanently at severity: critical, which
+                # the ntfy template renders as priority 5 — the DND-piercing
+                # tier — on a 1h repeat. That noise is why the phone app was
+                # muted, which in turn is why a real 14h Artifactory outage on
+                # 2026-07-27 went unseen. Disabling at chart level removes the
+                # ServiceMonitor and the PrometheusRule together; an inhibit
+                # rule would leave both still evaluating and still visible.
+                kubeControllerManager:
+                  enabled: false
+                kubeScheduler:
+                  enabled: false
+                kubeProxy:
+                  enabled: false
+                kubeEtcd:
+                  enabled: false
+                # CoreDNS genuinely differs between the two environments, so
+                # this one is conditional rather than off: k3s runs real CoreDNS
+                # exposing metrics on :9153, while GKE runs kube-dns, which does
+                # not. On GKE the target can never come up, producing permanent
+                # TargetDown warnings.
+                coreDns:
+                  enabled: {{ ne $env "gke" }}
                 prometheus:
                   prometheusSpec:
                     {{- if eq $env "gke" }}
@@ -90,6 +116,15 @@ spec:
                     # know it at author time. A platform Prometheus watches everything given.
                     serviceMonitorSelectorNilUsesHelmValues: false
                     podMonitorSelectorNilUsesHelmValues: false
+                    # Probes need the same cluster-wide discovery for the same
+                    # reason, and were missed when #11 fixed the other two.
+                    # Left at the default, probeSelector pins to
+                    # `release: heimdall-<xrsuffix>-kube-prometheus` — a suffix
+                    # that is random per cluster and therefore unknowable to a
+                    # Probe authored in another repo. Caught by testing on the
+                    # local cluster: serviceMonitorSelector rendered {} while
+                    # probeSelector still carried the matchLabels pin.
+                    probeSelectorNilUsesHelmValues: false
                 grafana:
                   enabled: true
                   adminPassword: admin
@@ -480,6 +515,212 @@ spec:
                       annotations:
                         summary: {{ `Prometheus TSDB compaction failures on {{ $labels.instance }}` | quote }}
                         description: {{ `{{ $value }} compaction failures in the last hour. Often a precursor to disk pressure or storage backend issues.` | quote }}
+                  # Black-box probe alerts, in two tiers.
+                  #
+                  # Probe discovery is cluster-wide, so ANY Probe anywhere would
+                  # otherwise page at critical — the exact over-use of the tier
+                  # this work exists to stop. Criticality is therefore opt-in via
+                  # a `watched: "true"` label on the probe's staticConfig, which
+                  # (unlike a CR metadata label) actually propagates onto the
+                  # series. Unmarked probes still alert, at warning.
+                  - name: heimdall.probes
+                    interval: 30s
+                    rules:
+                    - alert: HeimdallWatchedServiceDown
+                      expr: probe_success{watched="true"} == 0
+                      for: 3m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Watched service {{ $labels.instance }} is unreachable` | quote }}
+                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. 3m rides out a rolling restart or brief node blip while still paging within minutes; the 2026-07-27 Artifactory outage would have fired here and stayed firing for 14 hours.` | quote }}
+                    - alert: HeimdallProbedServiceDown
+                      expr: probe_success{watched!="true"} == 0
+                      for: 3m
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Probed service {{ $labels.instance }} is unreachable` | quote }}
+                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. This probe is not marked watched, so it notifies quietly rather than piercing Do Not Disturb — add "watched: true" to its staticConfig labels to promote it to critical.` | quote }}
+                    # probe_success == 0 cannot fire if the series stops existing.
+                    # These two cover that blind spot: the exporter being
+                    # unscrapeable, or every probe series vanishing at once.
+                    - alert: HeimdallProbeScrapeFailing
+                      expr: up{job=~"probe/.+"} == 0
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Prometheus cannot scrape probe job {{ $labels.job }}` | quote }}
+                        description: {{ `The blackbox exporter is unreachable for this probe, so probe_success is stale or absent and the down-alerts above are blind. Check the heimdall-blackbox alias Service and the exporter pod.` | quote }}
+                    - alert: HeimdallProbePipelineDown
+                      # Scoped to Probe-generated jobs rather than bare
+                      # absent(probe_success): any other exporter emitting a
+                      # probe_success series would otherwise satisfy the check
+                      # and mask a genuinely dead Probe pipeline.
+                      expr: absent(probe_success{job=~"probe/.+"})
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: heimdall
+                      annotations:
+                        summary: {{ `No probe_success series exist at all` | quote }}
+                        description: {{ `Every black-box probe series has disappeared — the exporter, the Probe CRs, or probe discovery is broken. All service-reachability alerting is silently dead until this clears.` | quote }}
+                    - alert: HeimdallWatchedServiceSlow
+                      expr: probe_duration_seconds > 5
+                      for: 10m
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Watched service {{ $labels.instance }} is responding slowly` | quote }}
+                        description: {{ `Probe duration has exceeded 5s for 10 minutes ({{ $value }}s). Often the leading edge of resource starvation before an outright failure.` | quote }}
+                    - alert: HeimdallCertExpiringSoon
+                      expr: probe_ssl_earliest_cert_expiry - time() < 14 * 24 * 3600
+                      for: 1h
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `TLS certificate for {{ $labels.instance }} expires in under 14 days` | quote }}
+                        description: {{ `cert-manager should renew automatically; this firing means renewal is not happening and manual intervention is needed before expiry.` | quote }}
+
+  # ──────────────────────────────────────────────────────────
+  # Step 3.6: Blackbox Exporter — black-box service probing
+  #
+  # Every other rule in this stack reasons about cluster internals. None of
+  # them answers "is the URL a user actually visits responding?" That gap is
+  # what let artifactory.terasology.io stay down for ~14h on 2026-07-27 while
+  # KubePodCrashLooping fired correctly but only at severity: warning.
+  #
+  # Probing supplies the missing axis and, with it, a principled severity
+  # rule: internal signals stay warning and inform diagnosis; a black-box
+  # probe failure is what earns critical and the DND bypass.
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-blackbox-exporter
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          {{- $name := .observed.composite.resource.metadata.name -}}
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: {{ $name }}-blackbox
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: blackbox-exporter
+          spec:
+            forProvider:
+              chart:
+                name: prometheus-blackbox-exporter
+                repository: https://prometheus-community.github.io/helm-charts
+                version: "11.5.0"
+              namespace: heimdall
+              values:
+                fullnameOverride: {{ $name }}-blackbox
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 128Mi
+                # The chart's own ServiceMonitor is deliberately off: Probe CRs
+                # are the intended entry point here, and the chart's monitor
+                # would scrape the exporter's own metrics rather than run any
+                # probe.
+                serviceMonitor:
+                  enabled: false
+            providerConfigRef:
+              name: helm-provider
+          ---
+          # A FIXED-NAME alias Service in front of the exporter.
+          #
+          # Composition Helm releases are named from the composite
+          # (heimdall-<xrsuffix>-…) and that suffix is random per cluster, so a
+          # Probe authored in another repo cannot know the generated Service
+          # name at author time. That is the same trap heimdall#11 hit with the
+          # `release` label, and repeating it would defeat the point: a probe is
+          # meant to be a file someone writes without consulting the cluster.
+          # Every Probe targets heimdall-blackbox.heimdall.svc:9115, which is
+          # identical on every cluster.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-blackbox-alias-svc
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: blackbox-alias-svc
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: v1
+                kind: Service
+                metadata:
+                  name: heimdall-blackbox
+                  namespace: heimdall
+                  labels:
+                    app.kubernetes.io/part-of: heimdall
+                    app.kubernetes.io/component: blackbox-alias
+                spec:
+                  type: ClusterIP
+                  ports:
+                  - name: http
+                    port: 9115
+                    targetPort: http
+                    protocol: TCP
+                  selector:
+                    app.kubernetes.io/name: prometheus-blackbox-exporter
+                    app.kubernetes.io/instance: {{ $name }}-blackbox
+          ---
+          # First watched service. Probes the readiness endpoint rather than the
+          # site root: the root serves a shell page early in Artifactory's boot,
+          # so it would have reported healthy during part of the outage, while
+          # /api/system/ping returns OK only once startup actually completes.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-artifactory
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-artifactory
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: artifactory
+                  namespace: heimdall
+                  labels:
+                    # Deliberately NO `release` label: with
+                    # probeSelectorNilUsesHelmValues false above, discovery is
+                    # cluster-wide, and this probe is meant to be the worked
+                    # example that other repos copy. Requiring a label they
+                    # cannot know would defeat the primitive.
+                    #
+                    # This CR-metadata label is descriptive only — it does NOT
+                    # reach the metric. The `watched` label that drives alert
+                    # severity lives in staticConfig.labels below.
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://artifactory.terasology.io/artifactory/api/system/ping
+                      # staticConfig labels DO land on the resulting series,
+                      # which is what makes severity selection possible.
+                      labels:
+                        watched: "true"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)

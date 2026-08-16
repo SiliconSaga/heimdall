@@ -1,0 +1,11 @@
+# Offline-render stand-in for the homelab cluster-identity EnvironmentConfig.
+# Used to verify the environment-conditional branches render the other way —
+# notably coreDns.enabled, which is true on k3s and false on GKE.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: cluster-identity
+data:
+  domain: localhost
+  environment: homelab
+  storageClass: local-path

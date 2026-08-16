@@ -1,0 +1,20 @@
+# Offline-render fixture: a bare XHeimdallStack XR (render takes XRs, not claims).
+# Usage (from the yggdrasil root; crossplane CLI + Docker required):
+#   crossplane render components/heimdall/tests/render/heimdall-xr.yaml \
+#     components/heimdall/crossplane/composition.yaml \
+#     components/heimdall/tests/render/functions.yaml \
+#     --extra-resources components/heimdall/tests/render/cluster-identity-gke.yaml
+#
+# Swap the --extra-resources file for cluster-identity-homelab.yaml to verify
+# the environment-conditional branches (Prometheus replicas, coreDns.enabled).
+apiVersion: heimdall.siliconsaga.org/v1alpha1
+kind: XHeimdallStack
+metadata:
+  name: heimdall
+spec:
+  parameters:
+    thanosEnabled: false
+    retentionDays: 7
+    storageSize: "20Gi"
+    lokiStorageSize: "5Gi"
+    tempoStorageSize: "5Gi"

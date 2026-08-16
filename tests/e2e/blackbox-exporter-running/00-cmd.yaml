@@ -1,0 +1,67 @@
+# Assert the Blackbox Exporter is up AND reachable at its fixed-name alias.
+# The alias is the load-bearing part: Probe CRs authored in other repos target
+# heimdall-blackbox.heimdall.svc:9115 because the chart's own Service name
+# carries the random per-cluster composite suffix and cannot be known at
+# author time. If the alias stops selecting ready pods, every probe silently
+# stops running while the exporter itself still looks healthy.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+commands:
+  - script: |
+      set -e
+
+      # Use {.items[*]...} not {.items[0]...}: the [0] index errors with
+      # "array index out of bounds" on an empty list, which under `set -e`
+      # aborts before the graceful failure message below.
+      DEPLOY=$(kubectl get deployment -n heimdall \
+        -l app.kubernetes.io/name=prometheus-blackbox-exporter \
+        -o jsonpath='{.items[*].metadata.name}')
+
+      if [ -z "$DEPLOY" ]; then
+        echo "FAIL: No prometheus-blackbox-exporter Deployment found in heimdall"
+        exit 1
+      fi
+
+      # shellcheck disable=SC2086
+      set -- $DEPLOY
+      if [ "$#" -gt 1 ]; then
+        echo "FAIL: expected one blackbox Deployment, found $#: $DEPLOY"
+        exit 1
+      fi
+      DEPLOY=$1
+      echo "Found blackbox Deployment: $DEPLOY"
+
+      # Retry: images pull before readyReplicas catches up on a fresh rollout.
+      for attempt in $(seq 1 18); do
+        READY=$(kubectl get deployment "$DEPLOY" -n heimdall \
+          -o jsonpath='{.status.readyReplicas}')
+        echo "Attempt $attempt — Deployment $DEPLOY: ready=${READY:-0}"
+        if [ -n "$READY" ] && [ "$READY" -ge 1 ]; then
+          break
+        fi
+        sleep 10
+      done
+
+      if [ -z "$READY" ] || [ "$READY" -lt 1 ]; then
+        echo "FAIL: blackbox exporter not Ready within timeout"
+        kubectl get pods -n heimdall -l app.kubernetes.io/name=prometheus-blackbox-exporter
+        exit 1
+      fi
+
+      # The fixed-name alias must exist and resolve to at least one ready address.
+      if ! kubectl get service heimdall-blackbox -n heimdall >/dev/null 2>&1; then
+        echo "FAIL: fixed-name alias Service heimdall-blackbox not found"
+        exit 1
+      fi
+
+      ADDRS=$(kubectl get endpoints heimdall-blackbox -n heimdall \
+        -o jsonpath='{.subsets[*].addresses[*].ip}')
+
+      if [ -z "$ADDRS" ]; then
+        echo "FAIL: heimdall-blackbox alias Service has no ready endpoints"
+        echo "      (its selector likely does not match the chart's pod labels)"
+        kubectl get service heimdall-blackbox -n heimdall -o yaml
+        exit 1
+      fi
+
+      echo "PASS: blackbox exporter Ready and alias resolves to: $ADDRS"

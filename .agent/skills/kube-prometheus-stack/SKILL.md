@@ -24,6 +24,7 @@ NOT for native AlertManager routing/templating — see sibling `alertmanager-con
 |------|---------|--------|
 | Operator picks up your CR | Label `ServiceMonitor`/`PrometheusRule` with `release: <chart-release-name>` | Default selector is `release=<release>`. **Missing this is the #1 silent-invisibility cause** — Prometheus doesn't scrape, rules don't fire, no error. |
 | Pick up CRs from other namespaces | `prometheus.prometheusSpec.serviceMonitorNamespaceSelector: {}` (and matching `podMonitor`/`rule`/`probe` `*NamespaceSelector` fields) — empty selector matches **all** namespaces. | Default is "same namespace as the Prometheus CR only." Don't conflate with `*Selector` (object-label match) — those are independent knobs. Flipping `*SelectorNilUsesHelmValues: false` does NOT control namespace scope; it makes the *object* selector match everything when empty, which sidesteps the `release:` label requirement above. |
+| Cluster-wide object discovery | Set **all** of `serviceMonitorSelectorNilUsesHelmValues`, `podMonitorSelectorNilUsesHelmValues`, `probeSelectorNilUsesHelmValues` to `false` | **These are independent knobs and it is easy to set two of three.** Probes are the usual casualty because they're added later than ServiceMonitors. Symptom: a `Probe` is simply never discovered — no error, no dropped target, it just doesn't exist. Verify with `kubectl get prometheus -o jsonpath='{.items[*].spec.probeSelector}'` — `{}` is cluster-wide, `matchLabels` is still pinned. |
 | Grafana admin password from Secret | `grafana.admin.existingSecret: <name>` + `passwordKey: password` | Legacy `grafana.adminPassword: <value>` works but bakes plaintext into helm values. Chart-version drift: `helm show values prometheus-community/kube-prometheus-stack` to confirm the current path. |
 | Scrape interval | `30s` is production-safe | Matches the chart's own cadence and 5m alert windows. |
 | `up == 0` `job` label | Operator-generated label is usually `<namespace>/<servicemonitor-name>` | If `up{job="…"} == 0` never matches, query bare `up{}` to see the actual label value. |
@@ -67,6 +68,22 @@ kubeScheduler:         { enabled: false }
 kubeProxy:             { enabled: false }
 kubeEtcd:              { enabled: false }
 ```
+
+**On chart 82.16.0 the `kubeXxx.enabled: false` half is sufficient on its own** — verified by rendering: baseline emits `KubeControllerManagerDown`/`KubeSchedulerDown`/`KubeProxyDown`, and with only the four `enabled: false` toggles it emits none, with no residual `etcd*` rules either. The rule templates are guarded by the same flag. Keeping the `defaultRules.rules.*` block is harmless belt-and-braces for older chart versions; check with a render rather than assuming either way:
+
+```bash
+helm template h kube-prometheus-stack --repo https://prometheus-community.github.io/helm-charts \
+  --version <ver> \
+  --set kubeControllerManager.enabled=false \
+  --set kubeScheduler.enabled=false \
+  --set kubeProxy.enabled=false \
+  --set kubeEtcd.enabled=false \
+  | grep -cE 'alert: (KubeControllerManagerDown|KubeSchedulerDown|KubeProxyDown|etcd)'
+```
+
+Expect `0`. Include the `etcd` family in the grep — it is a separate rule set from the three `*Down` alerts and is easy to leave enabled while believing the job is done.
+
+**These fire on unmanaged clusters too.** The rules are usually described as a managed-K8s problem, but they also fire on rancher-desktop/k3s, which doesn't scrape-expose those components either. Disable unconditionally rather than branching on environment.
 
 Alternative — route the alertnames to `'null'` in AlertManager (clutters Prometheus's ALERTS table but suppresses notifications).
 

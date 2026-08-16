@@ -13,9 +13,29 @@ Heimdall is a thin Crossplane composition wrapping kube-prometheus-stack + Loki 
 
 Why this matters: from inside this Heimdall repo, grepping `priority` under `crossplane/` (or anywhere else in-repo) returns nothing. First-time wirers waste ~20 min searching here before realizing the mapping is defined server-side in the sibling Nidavellir component's ntfy template. This skill exists largely to short-circuit that mistake.
 
+## The second trap: probes need no `release` label, rules do
+
+Discovery scope differs by object type here, and the asymmetry is deliberate:
+
+- **`ServiceMonitor` / `PodMonitor` / `Probe`** — discovered **cluster-wide**. No `release` label. All three `*SelectorNilUsesHelmValues` are `false`.
+- **`PrometheusRule`** — still scoped by `release: heimdall-<xrsuffix>-kube-prometheus`, because rules are authored by this composition.
+
+Older docs said ServiceMonitors needed the label; heimdall#11 changed that and the probe equivalent followed later. If something you authored is silently not discovered, check which of the three knobs is actually set — they're independent, and setting two of three is the easy mistake.
+
+## Watching a service (the probe primitive)
+
+"Attach a monitor to a service I care about" = commit a `Probe` pointing at `heimdall-blackbox.heimdall.svc:9115`. Full example in the [README](../../README.md#watching-a-service).
+
+**`heimdall-blackbox` is a hand-written alias Service, not the chart's.** The chart's own Service carries the composite suffix (`heimdall-<xrsuffix>-blackbox`), random per cluster, so a probe authored in another repo could never name it. The alias is the whole reason the primitive works cross-repo. If you find yourself "fixing" a probe by pointing it at the suffixed name, you've broken portability — fix the alias instead.
+
+Silent-failure shape: if the alias selector stops matching, every probe stops running while the exporter still reports healthy and its Deployment stays 1/1. `tests/e2e/blackbox-exporter-running` asserts the *endpoint list* is non-empty for exactly this reason.
+
+**Severity judgment:** internal signals (crashloops, PVC fill) stay `warning`; black-box unreachability is `critical`. That split is what earns the DND bypass honestly — a crashlooping pod in a dead namespace is not worth waking someone, an unreachable public URL is. Don't promote internal alerts to critical without a matching probe.
+
 ## When to Use
 
 - A new component needs alerts wired up (the answer is: PrometheusRule with `severity` label on your side, nothing to change in Heimdall).
+- Someone wants a service *watched* — that's a `Probe`, see above, not a PrometheusRule.
 - Adjusting severity → priority — jump straight to Nidavellir's `heimdall-template.yaml`.
 - Enabling the Knarr SMS/call escalation seam (dormant by default).
 - Understanding why per-environment differences are deliberately minimal.
@@ -30,7 +50,9 @@ NOT for AM routing-tree idioms / Watchdog / amtool — sibling skill [`alertmana
 
 Decisions baked into the current composition that aren't self-evident:
 
-- **`retentionDays` defaults to 7 as a stopgap** — fallout from the 2026-05-15 Prometheus PVC crashloop. The proper fix is object-storage migration (Phase-2 `objectStoreBucket`). Don't bump the default blindly; longer retention on the current PVC layout risks re-hitting the crashloop.
+- **`retentionDays` defaults to 7 as a stopgap** — fallout from the 2026-05-15 Prometheus PVC crashloop. The proper fix is object-storage migration (Phase-2 `objectStoreBucket`). Don't bump the default blindly; longer retention on the current PVC layout risks re-hitting the crashloop. 7d is also the ceiling for any percentile-based right-sizing work — long-term trend belongs in a git-backed observations file, not in a bigger TSDB.
+- **Control-plane `*Down` rules are disabled unconditionally, not per-environment.** They fire on rancher-desktop as well as GKE; neither exposes those components. `coreDns` *is* conditional, because k3s genuinely runs real CoreDNS on `:9153` and GKE's kube-dns does not. If you're tempted to make the `*Down` toggles conditional too, don't — that was checked.
+- **Verify hygiene with `ALERTS{alertstate="firing", severity="critical"}`.** It should be empty. A permanent critical devalues the tier and eventually gets the phone channel muted, which is how the 2026-07-27 Artifactory outage went unnoticed for 14 hours while the pipeline delivered 92 notifications with zero failures.
 - **Phase-2 design fields aren't in the XRD yet.** `oidcEnabled` and `objectStoreBucket` exist in design notes but not in `crossplane/xrd.yaml`'s schema. Setting them in a claim doesn't silently no-op at composition time — they get dropped by **schema pruning** before the composition ever sees them. Wire the XRD first.
 - **Knarr seam is criticals-only by design.** The composition conditionally appends a second webhook to the critical receiver, gated on `knarrWebhookUrl`. Warnings deliberately don't escalate. To change that, edit the composition — not a values override. Knarr design: `realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md`.
 - **Per-environment branching is replicas-only.** Homelab vs GKE varies one Helm value (Prometheus replicas). Everything else flows through `cluster-identity` EnvironmentConfig — read by the composition's `load-cluster-identity` step into `apiextensions.crossplane.io/environment`. Don't add env branches in the AM config block; push variability to the ntfy template (Nidavellir) or to the cluster-identity EnvironmentConfig instead.

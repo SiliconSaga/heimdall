@@ -1,0 +1,28 @@
+# Function packages for `crossplane render` — versions match what nordri
+# installs in-cluster (kubectl get functions.pkg.crossplane.io).
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-environment-configs
+  annotations:
+    render.crossplane.io/runtime: Docker
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-environment-configs:v0.4.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-go-templating
+  annotations:
+    render.crossplane.io/runtime: Docker
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.4.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-auto-ready
+  annotations:
+    render.crossplane.io/runtime: Docker
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.2.1
