@@ -731,6 +731,11 @@ spec:
                       # which is what makes severity selection possible.
                       labels:
                         watched: "true"
+                        # Human-readable name for dashboards and alert text. The
+                        # series is otherwise identified by its full probe URL,
+                        # which is unreadable on a wall display. Optional: panels
+                        # fall back to the Probe's own name when it is absent.
+                        service: "Artifactory"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)

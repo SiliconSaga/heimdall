@@ -56,14 +56,14 @@ data:
           "type": "stat",
           "id": 10,
           "title": "Service status",
-          "description": "probe_success for every Probe in the cluster. A tile per probe, added automatically as probes are created. Services carrying watched=\"true\" page at critical; the rest alert at warning.",
+          "description": "probe_success for every Probe in the cluster. A tile per probe, added automatically as probes are created. The name comes from an optional `service` label on the Probe's staticConfig, falling back to the Probe's own name — never the full URL, which is unreadable at a distance. Services carrying watched=\"true\" page at critical; the rest alert at warning.",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "gridPos": { "h": 5, "w": 8, "x": 0, "y": 1 },
           "targets": [
             {
               "refId": "A",
-              "expr": "probe_success",
-              "legendFormat": "{{instance}}",
+              "expr": "label_replace(label_replace(probe_success, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
+              "legendFormat": "{{display}}",
               "instant": true
             }
           ],
@@ -102,8 +102,8 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "(probe_ssl_earliest_cert_expiry - time()) / 86400",
-              "legendFormat": "{{instance}}",
+              "expr": "label_replace(label_replace((probe_ssl_earliest_cert_expiry - time()) / 86400, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
+              "legendFormat": "{{display}}",
               "instant": true
             }
           ],
@@ -144,8 +144,8 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "probe_duration_seconds",
-              "legendFormat": "{{instance}}"
+              "expr": "label_replace(label_replace(probe_duration_seconds, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
+              "legendFormat": "{{display}}"
             }
           ],
           "options": {
