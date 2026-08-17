@@ -1,0 +1,677 @@
+# Heimdall Overview dashboard (design §3).
+#
+# One wall-readable dashboard, four rows in priority order: watched-service
+# status · cluster CPU/memory requested-vs-used · top restarters · firing
+# alerts by severity. The 28 dashboards kube-prometheus-stack bundles stay
+# untouched for drill-down; this one answers "is anything wrong right now"
+# from across a room.
+#
+# Delivered as a plain ConfigMap rather than through the Crossplane
+# composition on purpose. The Grafana sidecar watches `grafana_dashboard: "1"`
+# cluster-wide (METHOD=WATCH, NAMESPACE=ALL), so a labelled ConfigMap is
+# picked up live with no Grafana restart and no composition revision. The
+# dashboard has no dependency on any composition parameter, and embedding
+# ~400 lines of JSON in a Go template would mean escaping every `{{ }}` a
+# Grafana legend and a PromQL label interpolation use. ArgoCD applies this
+# directory, so the file needs no additional wiring.
+#
+# The Prometheus datasource uid is `prometheus`, set explicitly by the
+# chart's own datasource ConfigMap — it is stable across clusters, unlike the
+# random `-<xrsuffix>-` release name in resource names.
+#
+# Node labels are shortened with label_replace so the bar charts stay legible
+# at wall distance: `gke-ttf-cluster-default-pool-f1384cb5-nnwk` → `nnwk`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heimdall-overview-dashboard
+  namespace: heimdall
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: heimdall
+    app.kubernetes.io/component: dashboard
+data:
+  heimdall-overview.json: |
+    {
+      "uid": "heimdall-overview",
+      "title": "Heimdall Overview",
+      "description": "Wall-readable cluster health: watched services, requested-vs-used capacity, top restarters, firing alerts.",
+      "tags": ["heimdall", "overview"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "panels": [
+        {
+          "type": "row",
+          "id": 1,
+          "title": "Watched services",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "id": 10,
+          "title": "Service status",
+          "description": "probe_success for every Probe in the cluster. A tile per probe, added automatically as probes are created. Services carrying watched=\"true\" page at critical; the rest alert at warning.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 5, "w": 8, "x": 0, "y": 1 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "probe_success",
+              "legendFormat": "{{instance}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "justifyMode": "auto",
+            "orientation": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": { "text": "DOWN", "color": "#d03b3b", "index": 0 },
+                    "1": { "text": "UP", "color": "#0ca30c", "index": 1 }
+                  }
+                }
+              ],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#d03b3b", "value": null }] },
+              "noValue": "no probes"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "bargauge",
+          "id": 11,
+          "title": "TLS expiry (days)",
+          "description": "Days until the probed endpoint's certificate expires. Amber under 21 days, red under 7.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 5, "w": 8, "x": 8, "y": 1 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(probe_ssl_earliest_cert_expiry - time()) / 86400",
+              "legendFormat": "{{instance}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "minVizWidth": 8,
+            "minVizHeight": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "d",
+              "decimals": 0,
+              "min": 0,
+              "max": 90,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "#d03b3b", "value": null },
+                  { "color": "#fab219", "value": 7 },
+                  { "color": "#0ca30c", "value": 21 }
+                ]
+              },
+              "noValue": "no TLS probes"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 12,
+          "title": "Probe latency",
+          "description": "Round-trip probe duration. A rising line ahead of a DOWN tile is the early warning.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "probe_duration_seconds",
+              "legendFormat": "{{instance}}"
+            }
+          ],
+          "options": {
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "pointSize": 8,
+                "spanNulls": false,
+                "axisLabel": "seconds"
+              },
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#3987e5", "value": null }] }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "type": "row",
+          "id": 2,
+          "title": "Cluster capacity — requested vs used",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "barchart",
+          "id": 20,
+          "title": "CPU per node — requested vs used",
+          "description": "The gap between the two bars is reserved-but-idle CPU. The scheduler only sees the Requested bar, which is why near-identical Requested bars can sit beside wildly different Used bars.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "label_replace(sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m])), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "expr": "label_replace(sum by (node) (kube_node_status_allocatable{resource=\"cpu\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            { "id": "joinByField", "options": { "byField": "node", "mode": "outer" } },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true },
+                "renameByName": {
+                  "Value #A": "Requested",
+                  "Value #B": "Used",
+                  "Value #C": "Allocatable"
+                }
+              }
+            }
+          ],
+          "options": {
+            "orientation": "auto",
+            "xTickLabelRotation": 0,
+            "showValue": "auto",
+            "stacking": "none",
+            "groupWidth": 0.7,
+            "barWidth": 0.9,
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 2,
+              "custom": { "lineWidth": 0, "fillOpacity": 90, "axisLabel": "CPU cores" },
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#3987e5", "value": null }] }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Requested" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#3987e5" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Used" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#d95926" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Allocatable" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "#898781" } },
+                  { "id": "custom.fillOpacity", "value": 15 }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "barchart",
+          "id": 21,
+          "title": "Memory per node — requested vs used",
+          "description": "Same comparison for memory. Memory is the harder constraint on e2-highmem-2 nodes, and unlike CPU it cannot be throttled — an under-set memory request ends in OOMKilled.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "label_replace(sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "expr": "label_replace(sum by (node) (kube_node_status_allocatable{resource=\"memory\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            { "id": "joinByField", "options": { "byField": "node", "mode": "outer" } },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true },
+                "renameByName": {
+                  "Value #A": "Requested",
+                  "Value #B": "Used",
+                  "Value #C": "Allocatable"
+                }
+              }
+            }
+          ],
+          "options": {
+            "orientation": "auto",
+            "xTickLabelRotation": 0,
+            "showValue": "auto",
+            "stacking": "none",
+            "groupWidth": 0.7,
+            "barWidth": 0.9,
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "decimals": 1,
+              "custom": { "lineWidth": 0, "fillOpacity": 90, "axisLabel": "memory" },
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#3987e5", "value": null }] }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Requested" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#3987e5" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Used" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#d95926" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Allocatable" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "#898781" } },
+                  { "id": "custom.fillOpacity", "value": 15 }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 22,
+          "title": "Cluster CPU — requested vs used vs allocatable",
+          "description": "The trend view of the same gap. Requested riding just under Allocatable while Used sits far below is the shape that blocks scheduling and blocks scale-down at the same time.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"})",
+              "legendFormat": "Requested"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m]))",
+              "legendFormat": "Used"
+            },
+            {
+              "refId": "C",
+              "expr": "sum(kube_node_status_allocatable{resource=\"cpu\"})",
+              "legendFormat": "Allocatable"
+            }
+          ],
+          "options": {
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 2,
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true,
+                "axisLabel": "CPU cores"
+              },
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#3987e5", "value": null }] }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Requested" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#3987e5" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Used" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "#d95926" } },
+                  { "id": "custom.fillOpacity", "value": 12 }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Allocatable" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "#898781" } },
+                  { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 6] } }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bargauge",
+          "id": 23,
+          "title": "CPU reserved but unused, per node",
+          "description": "Requested minus actually used. This is the capacity the scheduler believes is spoken for but that no workload is consuming — the number the right-sizing loop exists to shrink.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 7, "w": 8, "x": 12, "y": 15 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\") - on(node) label_replace(sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m])), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "legendFormat": "{{node}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "minVizWidth": 8,
+            "minVizHeight": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 2,
+              "min": 0,
+              "max": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "#0ca30c", "value": null },
+                  { "color": "#fab219", "value": 0.75 },
+                  { "color": "#d03b3b", "value": 1.25 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "id": 24,
+          "title": "Unschedulable",
+          "description": "Pods stuck Pending. Over-compression surfaces here first — but note a Pending DaemonSet pod will NOT trigger a cluster scale-up, because a new node cannot host a pod pinned by NodeAffinity to an existing one.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 7, "w": 4, "x": 20, "y": 15 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_pod_status_phase{phase=\"Pending\"}) or vector(0)",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "value",
+            "justifyMode": "center"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "#0ca30c", "value": null },
+                  { "color": "#fab219", "value": 1 },
+                  { "color": "#d03b3b", "value": 3 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "type": "row",
+          "id": 3,
+          "title": "Top restarters (6h)",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "bargauge",
+          "id": 30,
+          "title": "Containers by restart count, last 6h",
+          "description": "changes(kube_pod_container_status_restarts_total[6h]), top 10. This is the panel that catches the green-but-quietly-crashing class readiness probes miss entirely — a CrashLoopBackOff pod still reports phase=Running, so nothing keyed on pod phase would show it.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 23 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(10, changes(kube_pod_container_status_restarts_total[6h]))",
+              "legendFormat": "{{namespace}}/{{pod}} · {{container}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "sortBy": "Value",
+            "sortDesc": true,
+            "minVizWidth": 8,
+            "minVizHeight": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "#0ca30c", "value": null },
+                  { "color": "#fab219", "value": 3 },
+                  { "color": "#ec835a", "value": 10 },
+                  { "color": "#d03b3b", "value": 25 }
+                ]
+              },
+              "noValue": "no restarts in the window"
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "type": "row",
+          "id": 4,
+          "title": "Firing alerts",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "id": 40,
+          "title": "Critical",
+          "description": "A permanently non-empty critical count is itself the signal that alert hygiene has regressed — criticals are meant to be rare and actionable.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 8, "x": 0, "y": 33 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(ALERTS{alertstate=\"firing\", severity=\"critical\"}) or vector(0)",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "#0ca30c", "value": null },
+                  { "color": "#d03b3b", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "id": 41,
+          "title": "Warning",
+          "description": "Warnings deliver as a quiet ntfy push. A steady non-zero count here is tolerable; a growing one is drift.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 8, "x": 0, "y": 37 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(ALERTS{alertstate=\"firing\", severity=\"warning\"}) or vector(0)",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "#0ca30c", "value": null },
+                  { "color": "#fab219", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "table",
+          "id": 42,
+          "title": "Currently firing",
+          "description": "Every firing alert with its severity and namespace. Watchdog is expected here permanently — it fires by design as the dead-man's-switch heartbeat.",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 16, "x": 8, "y": 33 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ALERTS{alertstate=\"firing\"}",
+              "instant": true,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true, "Value": true, "__name__": true, "alertstate": true },
+                "indexByName": { "severity": 0, "alertname": 1, "namespace": 2, "pod": 3 }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": { "fields": {}, "sort": [{ "field": "severity", "desc": false }] }
+            }
+          ],
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true },
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#898781", "value": null }] },
+              "noValue": "nothing firing"
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "severity" },
+                "properties": [
+                  { "id": "custom.width", "value": 110 },
+                  { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "critical": { "text": "critical", "color": "#d03b3b", "index": 0 },
+                          "warning": { "text": "warning", "color": "#fab219", "index": 1 },
+                          "info": { "text": "info", "color": "#3987e5", "index": 2 },
+                          "none": { "text": "none", "color": "#898781", "index": 3 }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
