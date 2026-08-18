@@ -179,6 +179,21 @@ spec:
                         cpu: 250m
                         memory: 256Mi
                   config:
+                    # Alerts fan out to THREE ntfy topics, not one. A single topic
+                    # collapses on Android into "N notifications" with no way to
+                    # treat a down service differently from routine node chatter;
+                    # separate topics get their own notification group AND their
+                    # own per-topic sound/DND settings in the app, which is the
+                    # only lever that survives the phone overriding the server.
+                    #
+                    # Tiers, deliberately narrow at the top:
+                    #   2  heimdall-info     cluster chatter — capacity, saturation
+                    #   3  heimdall-workload something should be running and isn't
+                    #   4  heimdall-watched  a named service we explicitly watch
+                    #   5  (unused)          reserved for on-call; nothing earns it yet
+                    #
+                    # 5 is the only priority that pierces Do Not Disturb, so it stays
+                    # empty until the alerts have earned enough trust to wake someone.
                     route:
                       group_by: ['alertname', 'namespace']
                       group_wait: 30s
@@ -186,23 +201,38 @@ spec:
                       repeat_interval: 4h
                       receiver: 'null'
                       routes:
-                        - matchers: ['severity = "critical"']
-                          receiver: ntfy-critical
+                        # Tier 4 — services carrying watched="true" on the series.
+                        # First match wins, so this outranks severity entirely: a
+                        # watched service being down is the loudest thing we send.
+                        - matchers: ['watched = "true"']
+                          receiver: ntfy-watched
                           repeat_interval: 1h
-                        - matchers: ['severity = "warning"']
-                          receiver: ntfy-warning
+                        # Tier 3 — workload health. These are the kube-prometheus
+                        # alerts that mean "something should be running and isn't",
+                        # which is a different question from "the cluster is busy".
+                        - matchers: ['alertname =~ "KubePod.*|KubeContainerWaiting|KubeDeployment.*|KubeStatefulSet.*|KubeDaemonSet.*|KubeJob.*|KubeHpa.*"']
+                          receiver: ntfy-workload
+                        # Tier 2 — everything else that still warrants a look.
+                        # info/none severities keep falling through to 'null'
+                        # (Watchdog, InfoInhibitor) so they never reach the phone.
+                        - matchers: ['severity =~ "warning|critical"']
+                          receiver: ntfy-info
                     receivers:
-                      # blackhole for non-critical/warning alerts; quotes are
+                      # blackhole for anything below warning; quotes are
                       # load-bearing — bare null parses as YAML nil and the
                       # route's receiver ref would no longer match.
                       - name: 'null'
-                      - name: ntfy-warning
+                      - name: ntfy-info
                         webhook_configs:
-                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts?template=heimdall"
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-info?template=heimdall-info"
                             send_resolved: true
-                      - name: ntfy-critical
+                      - name: ntfy-workload
                         webhook_configs:
-                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts?template=heimdall"
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-workload?template=heimdall-workload"
+                            send_resolved: true
+                      - name: ntfy-watched
+                        webhook_configs:
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-watched?template=heimdall-watched"
                             send_resolved: true
                           {{- if .observed.composite.resource.spec.parameters.knarrWebhookUrl }}
                           - url: "{{ .observed.composite.resource.spec.parameters.knarrWebhookUrl }}"
