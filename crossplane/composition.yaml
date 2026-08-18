@@ -511,7 +511,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
-                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} in the heimdall namespace has been above 80% utilization for 15 minutes. This is the precursor to the 2026-05-15 Prometheus WAL-full crashloop incident — investigate disk pressure, retention settings, or expand the PVC.` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} is over 80% full. Check retention settings or expand it.` | quote }}
                     - alert: HeimdallPVCCritical
                       expr: |
                         (kubelet_volume_stats_used_bytes{namespace="heimdall"}
@@ -522,7 +522,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full — imminent out-of-space` | quote }}
-                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} above 90% utilization for 5 minutes. Out-of-space and pod crashloop are imminent. Expand the PVC immediately or reduce retentionDays.` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} is over 90% full. Expand it or reduce retentionDays.` | quote }}
                   - name: heimdall.prometheus-health
                     interval: 1m
                     rules:
@@ -538,7 +538,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus pod {{ $labels.pod }} restarted more than 3 times in 15 minutes` | quote }}
-                        description: {{ `The pod restarted {{ $value }} times in 15 minutes — restart-storm pattern. Check pod logs for "no space left on device", WAL corruption, or OOMKilled. Matches the 2026-05-15 incident shape.` | quote }}
+                        description: {{ `Restarted {{ $value }} times in 15 minutes. Check pod logs for disk-full, WAL corruption, or OOMKilled.` | quote }}
                     - alert: HeimdallPrometheusWALCorruption
                       expr: increase(prometheus_tsdb_wal_corruptions_total{namespace="heimdall"}[10m]) > 0
                       for: 0m
@@ -547,7 +547,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus TSDB WAL corruption detected on {{ $labels.instance }}` | quote }}
-                        description: {{ `{{ $value }} WAL corruption events reported in the last 10 minutes. Data loss likely; investigate disk health and Prometheus logs.` | quote }}
+                        description: {{ `{{ $value }} WAL corruption events in 10 minutes. Data loss likely; check disk health.` | quote }}
                     - alert: HeimdallPrometheusTSDBCompactionFailures
                       expr: increase(prometheus_tsdb_compactions_failed_total{namespace="heimdall"}[1h]) > 0
                       for: 0m
@@ -556,7 +556,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus TSDB compaction failures on {{ $labels.instance }}` | quote }}
-                        description: {{ `{{ $value }} compaction failures in the last hour. Often a precursor to disk pressure or storage backend issues.` | quote }}
+                        description: {{ `{{ $value }} compaction failures in the last hour. Often precedes disk pressure.` | quote }}
                   # Black-box probe alerts, in two tiers.
                   #
                   # Probe discovery is cluster-wide, so ANY Probe anywhere would
@@ -576,7 +576,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Watched service {{ $labels.instance }} is unreachable` | quote }}
-                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. 3m rides out a rolling restart or brief node blip while still paging within minutes; the 2026-07-27 Artifactory outage would have fired here and stayed firing for 14 hours.` | quote }}
+                        description: {{ `{{ $labels.instance }} has failed its probe for 3 minutes.` | quote }}
                     - alert: HeimdallProbedServiceDown
                       expr: probe_success{watched!="true"} == 0
                       for: 3m
@@ -585,7 +585,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Probed service {{ $labels.instance }} is unreachable` | quote }}
-                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. This probe is not marked watched, so it notifies quietly rather than piercing Do Not Disturb — add "watched: true" to its staticConfig labels to promote it to critical.` | quote }}
+                        description: {{ `{{ $labels.instance }} has failed its probe for 3 minutes. Add `watched: "true"` to its staticConfig labels to raise it to critical.` | quote }}
                     # probe_success == 0 cannot fire if the series stops existing.
                     # These two cover that blind spot: the exporter being
                     # unscrapeable, or every probe series vanishing at once.
@@ -597,7 +597,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus cannot scrape probe job {{ $labels.job }}` | quote }}
-                        description: {{ `The blackbox exporter is unreachable for this probe, so probe_success is stale or absent and the down-alerts above are blind. Check the heimdall-blackbox alias Service and the exporter pod.` | quote }}
+                        description: {{ `The blackbox exporter is unreachable, so probe alerts are blind. Check the heimdall-blackbox Service and the exporter pod.` | quote }}
                     - alert: HeimdallProbePipelineDown
                       # Scoped to Probe-generated jobs rather than bare
                       # absent(probe_success): any other exporter emitting a
@@ -610,7 +610,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `No probe_success series exist at all` | quote }}
-                        description: {{ `Every black-box probe series has disappeared — the exporter, the Probe CRs, or probe discovery is broken. All service-reachability alerting is silently dead until this clears.` | quote }}
+                        description: {{ `All probe series have disappeared. Service-reachability alerting is dead until this clears.` | quote }}
                     - alert: HeimdallWatchedServiceSlow
                       expr: probe_duration_seconds > 5
                       for: 10m
@@ -619,7 +619,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Watched service {{ $labels.instance }} is responding slowly` | quote }}
-                        description: {{ `Probe duration has exceeded 5s for 10 minutes ({{ $value }}s). Often the leading edge of resource starvation before an outright failure.` | quote }}
+                        description: {{ `Probe duration over 5s for 10 minutes ({{ $value }}s). Often precedes an outright failure.` | quote }}
                     - alert: HeimdallCertExpiringSoon
                       expr: probe_ssl_earliest_cert_expiry - time() < 14 * 24 * 3600
                       for: 1h
@@ -628,7 +628,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `TLS certificate for {{ $labels.instance }} expires in under 14 days` | quote }}
-                        description: {{ `cert-manager should renew automatically; this firing means renewal is not happening and manual intervention is needed before expiry.` | quote }}
+                        description: {{ `Certificate renewal is not happening. Manual intervention needed before expiry.` | quote }}
 
   # ──────────────────────────────────────────────────────────
   # Step 3.6: Blackbox Exporter — black-box service probing
