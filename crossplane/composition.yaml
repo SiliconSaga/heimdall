@@ -85,6 +85,37 @@ spec:
                 # TargetDown warnings.
                 coreDns:
                   enabled: {{ ne $env "gke" }}
+                # ── Keep the observability stack itself off BestEffort ─────
+                # These three ship with no resource requests, so they are
+                # BestEffort and get whatever CPU is left over. On a contended
+                # node that is not enough to answer their own liveness probes:
+                # kube-state-metrics reached 196 restarts and node-exporter 929,
+                # both killed by "context deadline exceeded" on /livez, with
+                # Prometheus abandoning scrapes mid-flight ("write: broken pipe").
+                #
+                # kube-state-metrics matters most — it backs every Kube* alert
+                # rule and most of the Overview dashboard, so when it is being
+                # restarted the monitoring goes quietly blind rather than
+                # reporting a problem.
+                #
+                # node-exporter is a DaemonSet, so its request applies per node
+                # and a Pending DaemonSet pod cannot trigger a cluster scale-up.
+                # Kept deliberately small for that reason.
+                kube-state-metrics:
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 128Mi
+                prometheus-node-exporter:
+                  resources:
+                    requests:
+                      cpu: 20m
+                      memory: 48Mi
+                prometheusOperator:
+                  resources:
+                    requests:
+                      cpu: 25m
+                      memory: 96Mi
                 prometheus:
                   prometheusSpec:
                     {{- if eq $env "gke" }}
