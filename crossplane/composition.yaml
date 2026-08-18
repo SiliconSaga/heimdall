@@ -109,8 +109,17 @@ spec:
                 prometheus-node-exporter:
                   resources:
                     requests:
-                      cpu: 20m
-                      memory: 48Mi
+                      # 10m, not the 20m first tried: a DaemonSet pod cannot
+                      # trigger a cluster scale-up, so any node too full to fit
+                      # the request simply loses node metrics for good. The
+                      # tightest node had 12m free and stranded a pod.
+                      #
+                      # Even 10m matters — it is the difference between
+                      # BestEffort and Burstable, which is what decides CFS
+                      # share and eviction order. Raise it once the idle
+                      # reservations on the packed nodes are freed.
+                      cpu: 10m
+                      memory: 32Mi
                 prometheusOperator:
                   resources:
                     requests:
