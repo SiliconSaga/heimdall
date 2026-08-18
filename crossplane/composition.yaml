@@ -616,7 +616,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Probed service {{ $labels.instance }} is unreachable` | quote }}
-                        description: {{ `{{ $labels.instance }} has failed its probe for 3 minutes. Add `watched: "true"` to its staticConfig labels to raise it to critical.` | quote }}
+                        description: {{ `{{ $labels.instance }} has failed its probe for 3 minutes. Set watched=true on its staticConfig labels to raise it to critical.` | quote }}
                     # probe_success == 0 cannot fire if the series stops existing.
                     # These two cover that blind spot: the exporter being
                     # unscrapeable, or every probe series vanishing at once.
@@ -683,6 +683,8 @@ spec:
       inline:
         template: |
           {{- $name := .observed.composite.resource.metadata.name -}}
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $domain := .observed.composite.resource.spec.parameters.domain | default $identity.domain -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -797,6 +799,98 @@ spec:
                         # which is unreadable on a wall display. Optional: panels
                         # fall back to the Probe's own name when it is absent.
                         service: "Artifactory"
+          ---
+          # Jenkins. /login is the unauthenticated 200 — the site root redirects,
+          # and anything deeper needs a session.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-jenkins
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-jenkins
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: jenkins
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://jenkins.terasology.io/login
+                      labels:
+                        watched: "true"
+                        service: "Jenkins"
+          ---
+          # Legacy ArgoCD. /healthz is served unauthenticated.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-argocd
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-argocd
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: argocd
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://argocd.terasology.io/healthz
+                      labels:
+                        watched: "true"
+                        service: "ArgoCD"
+          ---
+          # Grafana — the window onto everything else, so worth knowing when it
+          # is the thing that is down.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-grafana
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-grafana
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: grafana
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://grafana.{{ $domain }}/api/health
+                      labels:
+                        watched: "true"
+                        service: "Grafana"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)
