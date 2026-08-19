@@ -563,6 +563,77 @@ spec:
                       annotations:
                         summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full — imminent out-of-space` | quote }}
                         description: {{ `PVC {{ $labels.persistentvolumeclaim }} is over 90% full. Expand it or reduce retentionDays.` | quote }}
+                  # Data-service durability. The pvc-fill group above is scoped
+                  # to namespace=heimdall, so database volumes in tenant
+                  # namespaces had no fill alerting at all until this group.
+                  #
+                  # Selector matches data volumes only. pgBackRest repos
+                  # (*-repo1) are excluded from the shrink rule because expiring
+                  # an old backup legitimately frees space there.
+                  #
+                  # No pg_* metrics exist on this cluster — there is no
+                  # PostgreSQL exporter — so these infer database health from
+                  # volume behaviour rather than reading it from the engine.
+                  - name: heimdall.data-services
+                    interval: 1m
+                    rules:
+                    - alert: HeimdallDatabaseVolumeShrank
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*"}
+                         / (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*"} offset 1h)) < 0.5
+                      for: 10m
+                      labels:
+                        severity: critical
+                        component: data-services
+                        # Routes to the watched tier deliberately. Severity alone
+                        # lands in the silent topic, and data disappearing is the
+                        # one thing that should not wait to be noticed.
+                        watched: "true"
+                      annotations:
+                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} lost more than half its data` | quote }}
+                        description: {{ `Usage fell to {{ $value | humanizePercentage }} of an hour ago. Check the cluster before anything writes over it.` | quote }}
+                    - alert: HeimdallDatabaseVolumeRecreated
+                      expr: |
+                        (time() - kube_persistentvolumeclaim_created{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*"}) < 900
+                      for: 2m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is new` | quote }}
+                        description: {{ `A fresh volume means fresh data. Expected when provisioning, otherwise the old data is gone.` | quote }}
+                    - alert: HeimdallDatabaseVolumeFillingUp
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}
+                         / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}) > 0.85
+                      for: 15m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        description: {{ `Expand it or reclaim space before it fills.` | quote }}
+                    - alert: HeimdallDatabaseVolumeCritical
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}
+                         / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}) > 0.93
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: data-services
+                        watched: "true"
+                      annotations:
+                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        description: {{ `A database that runs out of disk stops writing and can need manual recovery. Expand it now.` | quote }}
+                    - alert: HeimdallDatabaseBackupFailed
+                      expr: kube_job_status_failed{job_name=~".*-backup-.*"} > 0
+                      for: 5m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Backup job {{ $labels.namespace }}/{{ $labels.job_name }} failed` | quote }}
+                        description: {{ `A failed backup is only discovered during a restore unless it is alerted on.` | quote }}
                   - name: heimdall.prometheus-health
                     interval: 1m
                     rules:

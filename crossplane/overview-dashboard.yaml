@@ -1238,13 +1238,363 @@ data:
         },
         {
           "type": "row",
+          "id": 6,
+          "title": "Data services",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 39
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "bargauge",
+          "id": 60,
+          "title": "Volume age (days)",
+          "description": "Age of each database volume. A drop to zero means the volume was recreated — the data is new, whatever the database reports.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 40
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(time() - kube_persistentvolumeclaim_created{persistentvolumeclaim=~\".*pgdata|data-.*postgresql.*|.*-repo1\"}) / 86400",
+              "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "sortBy": "Value",
+            "sortDesc": false,
+            "minVizWidth": 8,
+            "minVizHeight": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "d",
+              "decimals": 1,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#d03b3b",
+                    "value": null
+                  },
+                  {
+                    "color": "#ec835a",
+                    "value": 1
+                  },
+                  {
+                    "color": "#fab219",
+                    "value": 7
+                  },
+                  {
+                    "color": "#0ca30c",
+                    "value": 30
+                  }
+                ]
+              },
+              "noValue": "no database volumes found"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 61,
+          "title": "Data volume used",
+          "description": "Bytes on each database's data volume. A cliff is data loss, not cleanup.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 40
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\".*pgdata|data-.*postgresql.*\"}",
+              "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "pointSize": 8,
+                "spanNulls": false,
+                "axisLabel": "used"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#3987e5",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 62,
+          "title": "Backup repositories",
+          "description": "pgBackRest repository size. Flat for days means backups stopped — the failure that stays invisible until a restore.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 46
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\".*-repo1\"}",
+              "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "pointSize": 8,
+                "spanNulls": false,
+                "axisLabel": "repo size"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#3987e5",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "no backup repositories"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "bargauge",
+          "id": 63,
+          "title": "Volume fullness",
+          "description": "How full each database volume is. A full data volume is how a database is actually lost.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 8,
+            "y": 46
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (1 - kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\".*pgdata|data-.*postgresql.*|.*-repo1\"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\".*pgdata|data-.*postgresql.*|.*-repo1\"})",
+              "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "sortBy": "Value",
+            "sortDesc": true,
+            "minVizWidth": 8,
+            "minVizHeight": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 0,
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#0ca30c",
+                    "value": null
+                  },
+                  {
+                    "color": "#fab219",
+                    "value": 75
+                  },
+                  {
+                    "color": "#ec835a",
+                    "value": 85
+                  },
+                  {
+                    "color": "#d03b3b",
+                    "value": 92
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "bargauge",
+          "id": 64,
+          "title": "Database pod uptime",
+          "description": "Time since each database-plane pod last started. Short bars are resets.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 16,
+            "y": 46
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(time() - kube_pod_start_time{pod=~\".*postgres.*|.*-pg-.*|.*pgbouncer.*\", pod!~\".*operator.*|.*-backup-.*\"}) / 3600",
+              "legendFormat": "{{namespace}}/{{pod}}",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "sortBy": "Value",
+            "sortDesc": false,
+            "minVizWidth": 8,
+            "minVizHeight": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "decimals": 1,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#d03b3b",
+                    "value": null
+                  },
+                  {
+                    "color": "#ec835a",
+                    "value": 1
+                  },
+                  {
+                    "color": "#fab219",
+                    "value": 6
+                  },
+                  {
+                    "color": "#0ca30c",
+                    "value": 24
+                  }
+                ]
+              },
+              "noValue": "no database pods found"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "row",
           "id": 4,
           "title": "Firing alerts",
           "gridPos": {
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 39
+            "y": 52
           },
           "collapsed": false,
           "panels": []
@@ -1262,7 +1612,7 @@ data:
             "h": 4,
             "w": 8,
             "x": 0,
-            "y": 40
+            "y": 53
           },
           "targets": [
             {
@@ -1318,7 +1668,7 @@ data:
             "h": 8,
             "w": 16,
             "x": 8,
-            "y": 40
+            "y": 53
           },
           "targets": [
             {
@@ -1456,7 +1806,7 @@ data:
             "h": 4,
             "w": 8,
             "x": 0,
-            "y": 44
+            "y": 57
           },
           "targets": [
             {
