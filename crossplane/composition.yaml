@@ -125,6 +125,15 @@ spec:
                     # local cluster: serviceMonitorSelector rendered {} while
                     # probeSelector still carried the matchLabels pin.
                     probeSelectorNilUsesHelmValues: false
+                    # Rules need the same cluster-wide discovery, and are the last
+                    # of the four still at the chart default. An app PrometheusRule
+                    # (e.g. kubicvalheim's ValheimDown) cannot carry
+                    # `release: heimdall-<xrsuffix>-kube-prometheus` because that
+                    # suffix is random per cluster — the identical argument already
+                    # made above for ServiceMonitors and Probes. Heimdall's own
+                    # self-health rules are unaffected: they carry the label, and an
+                    # empty selector is a superset.
+                    ruleSelectorNilUsesHelmValues: false
                 grafana:
                   enabled: true
                   adminPassword: admin
@@ -422,9 +431,12 @@ spec:
   # these are namespace-pinned with heimdall-specific labels for clean
   # routing once AlertManager notifications land in a follow-up arc.
   #
-  # The `release: <name>-kube-prometheus` label matches the kube-prometheus-
-  # stack default `ruleSelectorNilUsesHelmValues: true` so the operator
-  # picks the rule up automatically.
+  # `ruleSelectorNilUsesHelmValues` is set explicitly false above, which
+  # renders `ruleSelector` as an empty selector — matching every
+  # PrometheusRule cluster-wide, these included. The `release:
+  # <name>-kube-prometheus` label is kept here to document intent, but it is
+  # no longer what makes the operator pick the rule up; an empty selector is
+  # a superset of it.
   # ──────────────────────────────────────────────────────────
   - step: deploy-self-health-rules
     functionRef:
