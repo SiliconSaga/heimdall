@@ -125,6 +125,15 @@ spec:
                     # local cluster: serviceMonitorSelector rendered {} while
                     # probeSelector still carried the matchLabels pin.
                     probeSelectorNilUsesHelmValues: false
+                    # Rules need the same cluster-wide discovery, and are the last
+                    # of the four still at the chart default. An app PrometheusRule
+                    # (e.g. kubicvalheim's ValheimDown) cannot carry
+                    # `release: heimdall-<xrsuffix>-kube-prometheus` because that
+                    # suffix is random per cluster — the identical argument already
+                    # made above for ServiceMonitors and Probes. Heimdall's own
+                    # self-health rules are unaffected: they carry the label, and an
+                    # empty selector is a superset.
+                    ruleSelectorNilUsesHelmValues: false
                 grafana:
                   enabled: true
                   adminPassword: admin
