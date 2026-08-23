@@ -431,9 +431,12 @@ spec:
   # these are namespace-pinned with heimdall-specific labels for clean
   # routing once AlertManager notifications land in a follow-up arc.
   #
-  # The `release: <name>-kube-prometheus` label matches the kube-prometheus-
-  # stack default `ruleSelectorNilUsesHelmValues: true` so the operator
-  # picks the rule up automatically.
+  # `ruleSelectorNilUsesHelmValues` is set explicitly false above, which
+  # renders `ruleSelector` as an empty selector — matching every
+  # PrometheusRule cluster-wide, these included. The `release:
+  # <name>-kube-prometheus` label is kept here to document intent, but it is
+  # no longer what makes the operator pick the rule up; an empty selector is
+  # a superset of it.
   # ──────────────────────────────────────────────────────────
   - step: deploy-self-health-rules
     functionRef:
