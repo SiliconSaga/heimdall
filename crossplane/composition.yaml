@@ -643,15 +643,25 @@ spec:
                         summary: {{ `Volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
                         description: {{ `A full volume stops writes and can need manual recovery. Expand it now.` | quote }}
                     - alert: HeimdallDatabaseBackupFailed
-                      # Scoped to the last 24h. kube_job_status_failed stays >0
-                      # for as long as the Job object exists, so an unscoped
-                      # rule fires forever after one failure and has to be
-                      # silenced — which is how a real second failure gets
-                      # missed. A day is longer than the daily backup interval,
+                      # Three conditions, and each removes a different way this
+                      # alert lies.
+                      #
+                      # kube_job_status_failed counts failed PODS and stays >0
+                      # for as long as the Job object exists. Unscoped, the rule
+                      # fires forever after one failure and gets silenced —
+                      # which is how a real second failure gets missed. Hence
+                      # the 24h window, longer than the daily backup interval,
                       # so a still-failing schedule keeps re-firing on its own.
+                      #
+                      # The `unless` is the subtler one: a Job that fails a pod
+                      # and then SUCCEEDS on retry keeps its failed count, so
+                      # the two conditions above would report a completed backup
+                      # as failed. Excluding Jobs whose Complete condition is
+                      # true means only genuinely unsuccessful backups alert.
                       expr: |
                         kube_job_status_failed{job_name=~".*-backup-.*"} > 0
                         and on(namespace, job_name) (time() - kube_job_created) < 86400
+                        unless on(namespace, job_name) kube_job_complete{condition="true"} == 1
                       for: 5m
                       labels:
                         severity: warning
@@ -748,7 +758,12 @@ spec:
                         summary: {{ `No probe_success series exist at all` | quote }}
                         description: {{ `All probe series have disappeared. Service-reachability alerting is dead until this clears.` | quote }}
                     - alert: HeimdallWatchedServiceSlow
-                      expr: probe_duration_seconds > 5
+                      # Scoped to watched, matching the name and the two tiers
+                      # above. Probe discovery is cluster-wide, so an unscoped
+                      # selector let any app's Probe raise an alert saying
+                      # "Watched service" about something nobody opted in —
+                      # contradicting the opt-in model this group is built on.
+                      expr: probe_duration_seconds{watched="true"} > 5
                       for: 10m
                       labels:
                         severity: warning
@@ -757,6 +772,11 @@ spec:
                         summary: {{ `Watched service {{ $labels.instance }} is responding slowly` | quote }}
                         description: {{ `Probe duration over 5s for 10 minutes ({{ $value }}s). Often precedes an outright failure.` | quote }}
                     - alert: HeimdallCertExpiringSoon
+                      # Left deliberately UNSCOPED, unlike the slow alert above.
+                      # An expiring certificate is worth knowing about on any
+                      # probed endpoint, watched or not, and the summary says
+                      # "TLS certificate for <instance>" rather than claiming
+                      # the service is watched. Scope and wording agree.
                       expr: probe_ssl_earliest_cert_expiry - time() < 14 * 24 * 3600
                       for: 1h
                       labels:

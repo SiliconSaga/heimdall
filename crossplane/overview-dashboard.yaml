@@ -81,7 +81,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(label_replace(probe_success, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
+              "expr": "label_replace(label_replace(probe_success{watched=\"true\"}, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
               "legendFormat": "{{display}}",
               "instant": true
             }
@@ -151,7 +151,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(label_replace((probe_ssl_earliest_cert_expiry - time()) / 86400, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
+              "expr": "label_replace(label_replace((probe_ssl_earliest_cert_expiry{watched=\"true\"} - time()) / 86400, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
               "legendFormat": "{{display}}",
               "instant": true
             }
@@ -216,7 +216,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(label_replace(probe_duration_seconds, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
+              "expr": "label_replace(label_replace(probe_duration_seconds{watched=\"true\"}, \"display\", \"$1\", \"job\", \".*/([^/]+)$\"), \"display\", \"$1\", \"service\", \"(.+)\")",
               "legendFormat": "{{display}}"
             }
           ],
