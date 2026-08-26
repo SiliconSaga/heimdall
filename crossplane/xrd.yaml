@@ -54,8 +54,8 @@ spec:
                     description: "Optional override for the ingress base domain. Defaults to EnvironmentConfig/cluster-identity.domain."
                   watchedDomain:
                     type: string
-                    default: "terasology.io"
-                    description: "Base domain for externally watched services (Artifactory, Jenkins, ArgoCD). Deliberately separate from `domain`: these are pre-existing services on their own domain, not platform ingress, so they do not follow the cluster's ingress base domain."
+                    default: ""
+                    description: "Base domain for externally watched services (Artifactory, Jenkins, ArgoCD). Empty disables those probes entirely, which is the right default: they target an external estate, so a cluster that cannot reach it would otherwise report them permanently down at the loudest tier. Deliberately separate from `domain` — these are pre-existing services on their own domain, not platform ingress."
                   knarrWebhookUrl:
                     type: string
                     pattern: '^https?://[^\s/?#]+([/?#].*)?$'

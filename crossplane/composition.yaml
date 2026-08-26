@@ -797,7 +797,14 @@ spec:
             them into $domain would silently repoint every probe at a host
             that does not exist and report the services as down.
           */ -}}
-          {{- $watchedDomain := .observed.composite.resource.spec.parameters.watchedDomain | default "terasology.io" -}}
+          {{- /*
+            No `| default` here, deliberately. Sprig's default fires on the
+            EMPTY STRING as well as on absent, so a claim explicitly setting
+            watchedDomain: "" to disable these probes would have the fallback
+            substituted straight back in and probe the external estate anyway.
+            The XRD carries the default instead, where "" means "" .
+          */ -}}
+          {{- $watchedDomain := .observed.composite.resource.spec.parameters.watchedDomain -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -865,6 +872,7 @@ spec:
                     app.kubernetes.io/name: prometheus-blackbox-exporter
                     app.kubernetes.io/instance: {{ $name }}-blackbox
           ---
+          {{- if $watchedDomain }}
           # First watched service. Probes the readiness endpoint rather than the
           # site root: the root serves a shell page early in Artifactory's boot,
           # so it would have reported healthy during part of the outage, while
@@ -973,9 +981,11 @@ spec:
                       labels:
                         watched: "true"
                         service: "ArgoCD"
+          {{- end }}
           ---
           # Grafana — the window onto everything else, so worth knowing when it
-          # is the thing that is down.
+          # is the thing that is down. Platform ingress, so it follows $domain
+          # and is probed on every cluster regardless of watchedDomain.
           apiVersion: kubernetes.crossplane.io/v1alpha2
           kind: Object
           metadata:
