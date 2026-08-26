@@ -59,11 +59,15 @@ Group `heimdall.data-services`, defined in `crossplane/composition.yaml`.
 | `HeimdallVolumeCritical` | volume over 93% full, for 5m | every volume | **watched** |
 | `HeimdallVolumeFillingUp` | volume over 85% full, for 15m | every volume | quiet |
 | `HeimdallDatabaseVolumeRecreated` | volume younger than 15 minutes, for 2m | PostgreSQL data | quiet |
-| `HeimdallDatabaseBackupFailed` | a backup Job failed within the last 24h, for 5m | backup Jobs | quiet |
+| `HeimdallDatabaseBackupFailed` | a backup Job failed within the last 24h and did not go on to complete, for 5m | backup Jobs | quiet |
 
 **Scope differs per rule, deliberately.** Fill applies to *every* volume outside `heimdall`, because running out of space is bad regardless of what is stored. Shrink and age match PostgreSQL data volumes by name, because the semantics only hold there — Postgres does not free large amounts of space on its own, whereas Redis rewriting an RDB or Kafka expiring segments legitimately drops usage, and alerting on those would be noise.
 
-`HeimdallDatabaseBackupFailed` is scoped to the **last 24 hours**. `kube_job_status_failed` stays above zero for as long as the Job object exists, so an unscoped rule fires forever after a single failure and has to be silenced — which is exactly how a real second failure gets missed. A day is longer than the backup interval, so a schedule that keeps failing keeps re-firing on its own.
+`HeimdallDatabaseBackupFailed` carries **two** qualifiers on top of the failure count, and removing either reintroduces a way the alert lies. Both exist because `kube_job_status_failed` counts failed **pods**, not failed Jobs.
+
+*Scoped to the last 24 hours*, because that count stays above zero for as long as the Job object exists. An unscoped rule fires forever after a single failure and has to be silenced — which is exactly how a real second failure gets missed. A day is longer than the backup interval, so a schedule that keeps failing keeps re-firing on its own.
+
+*Excludes Jobs whose `Complete` condition is true*, because a backup that loses a pod and then **succeeds on retry** keeps its failed count. Without this the alert reports a healthy, completed backup as a failure — the worse direction to be wrong in, since a false alarm on a working backup teaches you to ignore the one that matters. Do not simplify this back to a bare `kube_job_status_failed > 0`.
 
 **Two of these carry `watched: "true"`, and that label is doing real work.** AlertManager matches the watched route *first*, before severity — so `severity: critical` on its own would have landed in the silent tier alongside everything else. Data disappearing is the one thing that should not wait to be noticed, so it is labelled up into the tier normally reserved for named services.
 

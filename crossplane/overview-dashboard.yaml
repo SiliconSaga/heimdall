@@ -67,7 +67,7 @@ data:
           "type": "stat",
           "id": 10,
           "title": "Service status",
-          "description": "Up/down per Probe. Names come from an optional `service` label, else the Probe's name.",
+          "description": "Up/down per watched Probe. Names come from an optional `service` label, else the Probe's name.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -128,7 +128,7 @@ data:
                   }
                 ]
               },
-              "noValue": "no probes"
+              "noValue": "no watched probes"
             },
             "overrides": []
           }
@@ -137,7 +137,7 @@ data:
           "type": "bargauge",
           "id": 11,
           "title": "TLS expiry (days)",
-          "description": "Days until each probed certificate expires. Amber under 21, red under 7.",
+          "description": "Days until each watched certificate expires. Amber under 21, red under 7. Note HeimdallCertExpiringSoon covers every probe, not just these.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -193,7 +193,7 @@ data:
                   }
                 ]
               },
-              "noValue": "no TLS probes"
+              "noValue": "no watched TLS probes"
             },
             "overrides": []
           }
@@ -202,7 +202,7 @@ data:
           "type": "timeseries",
           "id": 12,
           "title": "Probe latency",
-          "description": "Probe round-trip time. A rising line often precedes a DOWN tile.",
+          "description": "Round-trip time per watched Probe. A rising line often precedes a DOWN tile.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
