@@ -567,9 +567,14 @@ spec:
                   # to namespace=heimdall, so database volumes in tenant
                   # namespaces had no fill alerting at all until this group.
                   #
-                  # Selector matches data volumes only. pgBackRest repos
-                  # (*-repo1) are excluded from the shrink rule because expiring
-                  # an old backup legitimately frees space there.
+                  # Scope differs per rule, deliberately. Fill applies to every
+                  # volume, because running out of space is bad for anything.
+                  # Shrink and age match PostgreSQL data volumes by name,
+                  # because the semantics only hold there: Postgres does not
+                  # free large amounts of space on its own, whereas Redis
+                  # rewriting an RDB or Kafka expiring segments legitimately
+                  # drops usage, and alerting on those would be noise. pgBackRest
+                  # repos (*-repo1) are excluded from shrink for the same reason.
                   #
                   # No pg_* metrics exist on this cluster — there is no
                   # PostgreSQL exporter — so these infer database health from
@@ -602,31 +607,51 @@ spec:
                       annotations:
                         summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is new` | quote }}
                         description: {{ `A fresh volume means fresh data. Expected when provisioning, otherwise the old data is gone.` | quote }}
-                    - alert: HeimdallDatabaseVolumeFillingUp
+                    # Fill alerting covers EVERY volume outside heimdall rather
+                    # than matching database name patterns.
+                    #
+                    # Review found the pattern silently excluded real data
+                    # volumes — Valkey, Kafka, Chroma and OpenBao all store
+                    # state and none match a postgres-shaped name. Enumerating
+                    # engines would leave the next one uncovered the same way,
+                    # and a volume running out of space is bad regardless of
+                    # what is on it, so there is nothing to gain by narrowing.
+                    # heimdall's own storage is excluded because the
+                    # heimdall.pvc-fill group above already covers it at its own
+                    # thresholds.
+                    - alert: HeimdallVolumeFillingUp
                       expr: |
-                        (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}
-                         / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}) > 0.85
+                        (kubelet_volume_stats_used_bytes{namespace!="heimdall"}
+                         / kubelet_volume_stats_capacity_bytes{namespace!="heimdall"}) > 0.85
                       for: 15m
                       labels:
                         severity: warning
                         component: data-services
                       annotations:
-                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        summary: {{ `Volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
                         description: {{ `Expand it or reclaim space before it fills.` | quote }}
-                    - alert: HeimdallDatabaseVolumeCritical
+                    - alert: HeimdallVolumeCritical
                       expr: |
-                        (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}
-                         / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*|.*-repo1"}) > 0.93
+                        (kubelet_volume_stats_used_bytes{namespace!="heimdall"}
+                         / kubelet_volume_stats_capacity_bytes{namespace!="heimdall"}) > 0.93
                       for: 5m
                       labels:
                         severity: critical
                         component: data-services
                         watched: "true"
                       annotations:
-                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
-                        description: {{ `A database that runs out of disk stops writing and can need manual recovery. Expand it now.` | quote }}
+                        summary: {{ `Volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        description: {{ `A full volume stops writes and can need manual recovery. Expand it now.` | quote }}
                     - alert: HeimdallDatabaseBackupFailed
-                      expr: kube_job_status_failed{job_name=~".*-backup-.*"} > 0
+                      # Scoped to the last 24h. kube_job_status_failed stays >0
+                      # for as long as the Job object exists, so an unscoped
+                      # rule fires forever after one failure and has to be
+                      # silenced — which is how a real second failure gets
+                      # missed. A day is longer than the daily backup interval,
+                      # so a still-failing schedule keeps re-firing on its own.
+                      expr: |
+                        kube_job_status_failed{job_name=~".*-backup-.*"} > 0
+                        and on(namespace, job_name) (time() - kube_job_created) < 86400
                       for: 5m
                       labels:
                         severity: warning
@@ -765,6 +790,14 @@ spec:
           {{- $name := .observed.composite.resource.metadata.name -}}
           {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
           {{- $domain := .observed.composite.resource.spec.parameters.domain | default $identity.domain -}}
+          {{- /*
+            Watched services sit on their own domain, NOT the platform's.
+            Grafana is platform ingress and follows $domain; Artifactory,
+            Jenkins and ArgoCD are pre-existing services that do not. Folding
+            them into $domain would silently repoint every probe at a host
+            that does not exist and report the services as down.
+          */ -}}
+          {{- $watchedDomain := .observed.composite.resource.spec.parameters.watchedDomain | default "terasology.io" -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -869,7 +902,7 @@ spec:
                   targets:
                     staticConfig:
                       static:
-                      - https://artifactory.terasology.io/artifactory/api/system/ping
+                      - https://artifactory.{{ $watchedDomain }}/artifactory/api/system/ping
                       # staticConfig labels DO land on the resulting series,
                       # which is what makes severity selection possible.
                       labels:
@@ -906,7 +939,7 @@ spec:
                   targets:
                     staticConfig:
                       static:
-                      - https://jenkins.terasology.io/login
+                      - https://jenkins.{{ $watchedDomain }}/login
                       labels:
                         watched: "true"
                         service: "Jenkins"
@@ -936,7 +969,7 @@ spec:
                   targets:
                     staticConfig:
                       static:
-                      - https://argocd.terasology.io/healthz
+                      - https://argocd.{{ $watchedDomain }}/healthz
                       labels:
                         watched: "true"
                         service: "ArgoCD"

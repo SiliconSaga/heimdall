@@ -25,19 +25,30 @@ If `openbao-0` is `0/1` or the store reports `InvalidProviderConfig`, unseal fir
 
 Generate locally so the value never appears in a command that a shell history or a CI log would capture more widely than intended.
 
+Both values travel on **stdin**, not in arguments. Anything in argv is visible to `ps` inside the container for the life of the call and is recorded in the API server's audit log of the exec — neither of which a password should reach.
+
 ```bash
 GRAFANA_PW=$(openssl rand -base64 24)
 ROOT_TOKEN=$(kubectl get secret openbao-init -n openbao -o jsonpath='{.data.root_token}' | base64 -d)
 
-kubectl exec -n openbao openbao-0 -- env BAO_TOKEN="$ROOT_TOKEN" \
-  bao kv put secret/heimdall/grafana admin-user=admin admin-password="$GRAFANA_PW"
+# First line is the token, the rest is the password. `admin-password=-` is
+# OpenBao's own convention for reading a value from stdin.
+printf '%s\n%s' "$ROOT_TOKEN" "$GRAFANA_PW" | kubectl exec -i -n openbao openbao-0 -- sh -c '
+  read -r BAO_TOKEN
+  export BAO_TOKEN
+  bao kv put secret/heimdall/grafana admin-user=admin admin-password=-
+'
 ```
 
-Check it round-trips:
+Check it round-trips — comparing rather than printing, so the value stays out of the terminal and its scrollback:
 
 ```bash
-kubectl exec -n openbao openbao-0 -- env BAO_TOKEN="$ROOT_TOKEN" \
-  bao kv get -field=admin-password secret/heimdall/grafana
+stored=$(printf '%s' "$ROOT_TOKEN" | kubectl exec -i -n openbao openbao-0 -- sh -c '
+  read -r BAO_TOKEN
+  export BAO_TOKEN
+  bao kv get -field=admin-password secret/heimdall/grafana')
+
+[ "$stored" = "$GRAFANA_PW" ] && echo "round-trip OK" || echo "MISMATCH"
 ```
 
 ## Step 2 — materialize it as a Kubernetes Secret
@@ -108,9 +119,11 @@ Because of the trap above, steps 1–3 do not change the credential on an instan
 GRAFANA_POD=$(kubectl get pod -n heimdall -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
 GRAFANA_PW=$(kubectl get secret grafana-admin-credentials -n heimdall -o jsonpath='{.data.admin-password}' | base64 -d)
 
-kubectl exec -n heimdall "$GRAFANA_POD" -c grafana -- \
-  grafana-cli --homepath /usr/share/grafana admin reset-admin-password "$GRAFANA_PW"
+printf '%s' "$GRAFANA_PW" | kubectl exec -i -n heimdall "$GRAFANA_POD" -c grafana -- \
+  grafana-cli --homepath /usr/share/grafana admin reset-admin-password --password-from-stdin
 ```
+
+`--password-from-stdin` rather than a positional argument, for the same reason as step 1 — a positional password is visible in the container's process list and in the exec audit record.
 
 `--homepath` is required: without it the CLI cannot find the config and database and exits with an error rather than doing nothing, which is at least a loud failure.
 
@@ -120,37 +133,61 @@ On a **fresh** install this step is unnecessary — the admin user is created fr
 
 Four checks, in order. The last one is the only one that proves the change took effect.
 
+`$GRAFANA_PW_OLD` is the credential being replaced. On the **first** migration that is the chart default, `admin`. On a **rotation** it is the previously generated value, which step 1 of the rotation procedure captures before overwriting — see below. Check 4 is worthless against the wrong value, because a password that was never set is refused whether or not the reset worked.
+
 ```bash
-# 1. The Secret carries the value ESO fetched
-kubectl get secret grafana-admin-credentials -n heimdall -o jsonpath='{.data.admin-password}' | base64 -d; echo
+GRAFANA_PW_OLD=${GRAFANA_PW_OLD:-admin}
+
+# 1. The Secret carries the value ESO fetched — compared, not printed
+secret_pw=$(kubectl get secret grafana-admin-credentials -n heimdall \
+  -o jsonpath='{.data.admin-password}' | base64 -d)
+[ "$secret_pw" = "$GRAFANA_PW" ] && echo "secret matches" || echo "SECRET MISMATCH"
 
 # 2. Grafana's own health endpoint is up
 kubectl exec -n heimdall "$GRAFANA_POD" -c grafana -- \
   curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/api/health
 
 # 3. The NEW password authenticates -> expect 200
-kubectl exec -n heimdall "$GRAFANA_POD" -c grafana -- \
-  curl -s -o /dev/null -w '%{http_code}\n' -u "admin:$GRAFANA_PW" http://localhost:3000/api/org
+#    `--config -` reads the credential from stdin, keeping it out of argv.
+printf 'user = "admin:%s"\n' "$GRAFANA_PW" | kubectl exec -i -n heimdall "$GRAFANA_POD" -c grafana -- \
+  curl -s -o /dev/null -w '%{http_code}\n' --config - http://localhost:3000/api/org
 
 # 4. The OLD password is refused -> expect 401
-kubectl exec -n heimdall "$GRAFANA_POD" -c grafana -- \
-  curl -s -o /dev/null -w '%{http_code}\n' -u 'admin:admin' http://localhost:3000/api/org
+printf 'user = "admin:%s"\n' "$GRAFANA_PW_OLD" | kubectl exec -i -n heimdall "$GRAFANA_POD" -c grafana -- \
+  curl -s -o /dev/null -w '%{http_code}\n' --config - http://localhost:3000/api/org
 ```
 
 Check 4 returning `200` means the reset did not take: the value is in the Secret and in the environment, but Grafana's database still holds the old credential. Re-run step 4 and confirm the CLI reported success rather than a config error.
 
-Anonymous access is off by default, so an unauthenticated call to `/api/org` returning `401` is expected and is not a substitute for check 4 — that check must use the literal old password.
+Anonymous access is off by default, so an unauthenticated call to `/api/org` returning `401` is expected and is not a substitute for check 4 — that check must use the actual previous password.
 
 ## Rotation
 
 Rotation is steps 1, 4 and 5 — write the new value to OpenBao, wait for ESO's refresh interval (or force it), then reset and validate. Steps 2 and 3 are one-time wiring.
 
+**Capture the current password first.** Step 1 overwrites it in OpenBao, and once that has happened the old value is unrecoverable — which leaves check 4 with nothing real to test against:
+
+```bash
+GRAFANA_PW_OLD=$(kubectl get secret grafana-admin-credentials -n heimdall \
+  -o jsonpath='{.data.admin-password}' | base64 -d)
+```
+
+Then run step 1 with a new `GRAFANA_PW`, force the refresh, and **wait for the Secret to actually carry the new value** before resetting Grafana. Resetting first means step 4 writes whatever the Secret still holds, which on a slow refresh is the old password:
+
 ```bash
 kubectl annotate externalsecret grafana-admin-credentials -n heimdall \
   force-sync="$(date +%s)" --overwrite
+
+# Poll until ESO has propagated the new value.
+until [ "$(kubectl get secret grafana-admin-credentials -n heimdall \
+            -o jsonpath='{.data.admin-password}' | base64 -d)" = "$GRAFANA_PW" ]; do
+  sleep 2
+done
 ```
 
-Remove that annotation afterwards if the ExternalSecret is managed in Git, so the live object does not drift from its manifest.
+Now run step 4, then step 5 with both `GRAFANA_PW` and `GRAFANA_PW_OLD` set.
+
+Remove the annotation afterwards if the ExternalSecret is managed in Git, so the live object does not drift from its manifest.
 
 ## Notes
 

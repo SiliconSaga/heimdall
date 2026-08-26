@@ -70,7 +70,21 @@ mem_inner="max by (namespace, workload) (sum by (namespace, pod) (container_memo
 cpu_req="max by (namespace, workload) (sum by (namespace, pod) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}) ${pod_to_workload})"
 mem_req="max by (namespace, workload) (sum by (namespace, pod) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}) ${pod_to_workload})"
 
-fetch() { q "$1" | jq -r '.data.result[]? | "\(.metric.namespace)/\(.metric.workload)\t\(.value[1])"'; }
+# Check Prometheus reported success before reading rows. On an error response
+# `.data.result[]?` yields nothing, so the report would be written with empty
+# tables and read as "nothing to right-size" rather than as a failure — the
+# worst outcome for a document whose whole purpose is to be believed later.
+fetch() {
+  local body status
+  body="$(q "$1")" || { echo "query failed: $1" >&2; return 1; }
+  status="$(printf '%s' "$body" | jq -r '.status // "unknown"')"
+  if [ "$status" != "success" ]; then
+    printf 'prometheus returned %s: %s\n' \
+      "$status" "$(printf '%s' "$body" | jq -r '.error // "no error field"')" >&2
+    return 1
+  fi
+  printf '%s' "$body" | jq -r '.data.result[]? | "\(.metric.namespace)/\(.metric.workload)\t\(.value[1])"'
+}
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

@@ -42,7 +42,7 @@ The `Data services` row on the Heimdall Overview dashboard:
 | Volume age (days) | how long each database volume has existed |
 | Data volume used | usage over time — the cliff detector |
 | Backup repositories | pgBackRest repo size over time |
-| Volume fullness | used vs capacity |
+| Volume fullness | used vs capacity — top 10 across the cluster |
 | Database pod uptime | time since each database-plane pod started |
 
 **Volume age is coloured inverted on purpose.** Young is red, old is green. Everywhere else on the dashboard a low number is good; here a volume that is minutes old where a months-old one is expected is the whole finding.
@@ -53,13 +53,17 @@ The `Data services` row on the Heimdall Overview dashboard:
 
 Group `heimdall.data-services`, defined in `crossplane/composition.yaml`.
 
-| Alert | Fires when | Tier |
-|---|---|---|
-| `HeimdallDatabaseVolumeShrank` | usage falls below half of an hour ago, for 10m | **watched** |
-| `HeimdallDatabaseVolumeCritical` | volume over 93% full, for 5m | **watched** |
-| `HeimdallDatabaseVolumeFillingUp` | volume over 85% full, for 15m | quiet |
-| `HeimdallDatabaseVolumeRecreated` | volume younger than 15 minutes, for 2m | quiet |
-| `HeimdallDatabaseBackupFailed` | a backup Job reports failure, for 5m | quiet |
+| Alert | Fires when | Scope | Tier |
+|---|---|---|---|
+| `HeimdallDatabaseVolumeShrank` | usage falls below half of an hour ago, for 10m | PostgreSQL data | **watched** |
+| `HeimdallVolumeCritical` | volume over 93% full, for 5m | every volume | **watched** |
+| `HeimdallVolumeFillingUp` | volume over 85% full, for 15m | every volume | quiet |
+| `HeimdallDatabaseVolumeRecreated` | volume younger than 15 minutes, for 2m | PostgreSQL data | quiet |
+| `HeimdallDatabaseBackupFailed` | a backup Job failed within the last 24h, for 5m | backup Jobs | quiet |
+
+**Scope differs per rule, deliberately.** Fill applies to *every* volume outside `heimdall`, because running out of space is bad regardless of what is stored. Shrink and age match PostgreSQL data volumes by name, because the semantics only hold there — Postgres does not free large amounts of space on its own, whereas Redis rewriting an RDB or Kafka expiring segments legitimately drops usage, and alerting on those would be noise.
+
+`HeimdallDatabaseBackupFailed` is scoped to the **last 24 hours**. `kube_job_status_failed` stays above zero for as long as the Job object exists, so an unscoped rule fires forever after a single failure and has to be silenced — which is exactly how a real second failure gets missed. A day is longer than the backup interval, so a schedule that keeps failing keeps re-firing on its own.
 
 **Two of these carry `watched: "true"`, and that label is doing real work.** AlertManager matches the watched route *first*, before severity — so `severity: critical` on its own would have landed in the silent tier alongside everything else. Data disappearing is the one thing that should not wait to be noticed, so it is labelled up into the tier normally reserved for named services.
 
@@ -86,4 +90,8 @@ The order matters. Restoring over a database that was merely *unmounted* rather 
 
 ## Coverage gap this closed
 
-The pre-existing `heimdall.pvc-fill` group is scoped to `namespace="heimdall"` — it watches Prometheus, Loki and Tempo storage only. **Database volumes in tenant namespaces had no fill alerting at all.** Ting, Keycloak and Gitea could have filled their data volumes without a single alert. The `heimdall.data-services` group covers them by PVC name pattern rather than by namespace, so a new tenant is covered the moment its volume matches.
+The pre-existing `heimdall.pvc-fill` group is scoped to `namespace="heimdall"` — it watches Prometheus, Loki and Tempo storage only. **Every other volume in the cluster had no fill alerting at all.** Ting, Keycloak, Gitea, Jenkins and Artifactory could have filled their volumes without a single alert.
+
+The first version of this group matched database volumes by name pattern, and review caught that it inherited the same shape of problem: Valkey, Kafka, Chroma and OpenBao all store state and none of them look like a Postgres volume. Enumerating engines would have left the next one uncovered in the same way, so **fill alerting now matches every volume outside `heimdall` and applies no name pattern at all**. There is nothing to gain by narrowing it — a full volume is a problem whatever is on it.
+
+Name patterns survive only where the *meaning* of the metric depends on the engine, which is the shrink and age rules.
