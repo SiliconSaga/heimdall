@@ -48,8 +48,15 @@ stored=$(printf '%s' "$ROOT_TOKEN" | kubectl exec -i -n openbao openbao-0 -- sh 
   export BAO_TOKEN
   bao kv get -field=admin-password secret/heimdall/grafana')
 
-[ "$stored" = "$GRAFANA_PW" ] && echo "round-trip OK" || echo "MISMATCH"
+if [ "$stored" = "$GRAFANA_PW" ]; then
+  echo "round-trip OK"
+else
+  echo "MISMATCH: OpenBao does not hold the value just written — stop here" >&2
+  false
+fi
 ```
+
+`false` rather than only printing, so the check leaves a non-zero status. A validation step that reports failure and still exits `0` is one a copied script will run straight past.
 
 ## Step 2 — materialize it as a Kubernetes Secret
 
@@ -135,26 +142,41 @@ Four checks, in order. The last one is the only one that proves the change took 
 
 `$GRAFANA_PW_OLD` is the credential being replaced. On the **first** migration that is the chart default, `admin`. On a **rotation** it is the previously generated value, which step 1 of the rotation procedure captures before overwriting — see below. Check 4 is worthless against the wrong value, because a password that was never set is refused whether or not the reset worked.
 
+Each check asserts rather than prints, so a failure leaves a non-zero status instead of a number someone has to notice.
+
 ```bash
 GRAFANA_PW_OLD=${GRAFANA_PW_OLD:-admin}
+
+expect() {  # expect <what> <got> <wanted>
+  if [ "$2" = "$3" ]; then
+    echo "ok   $1"
+  else
+    echo "FAIL $1: got '$2', wanted '$3'" >&2
+    false
+  fi
+}
+
+code() {  # run curl inside the pod, echo the status code
+  kubectl exec -i -n heimdall "$GRAFANA_POD" -c grafana -- \
+    curl -s -o /dev/null -w '%{http_code}' "$@"
+}
 
 # 1. The Secret carries the value ESO fetched — compared, not printed
 secret_pw=$(kubectl get secret grafana-admin-credentials -n heimdall \
   -o jsonpath='{.data.admin-password}' | base64 -d)
-[ "$secret_pw" = "$GRAFANA_PW" ] && echo "secret matches" || echo "SECRET MISMATCH"
+expect "secret matches OpenBao" "$([ "$secret_pw" = "$GRAFANA_PW" ] && echo yes || echo no)" yes
 
 # 2. Grafana's own health endpoint is up
-kubectl exec -n heimdall "$GRAFANA_POD" -c grafana -- \
-  curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/api/health
+expect "health endpoint" "$(code http://localhost:3000/api/health)" 200
 
-# 3. The NEW password authenticates -> expect 200
+# 3. The NEW password authenticates.
 #    `--config -` reads the credential from stdin, keeping it out of argv.
-printf 'user = "admin:%s"\n' "$GRAFANA_PW" | kubectl exec -i -n heimdall "$GRAFANA_POD" -c grafana -- \
-  curl -s -o /dev/null -w '%{http_code}\n' --config - http://localhost:3000/api/org
+expect "new password accepted" \
+  "$(printf 'user = "admin:%s"\n' "$GRAFANA_PW" | code --config - http://localhost:3000/api/org)" 200
 
-# 4. The OLD password is refused -> expect 401
-printf 'user = "admin:%s"\n' "$GRAFANA_PW_OLD" | kubectl exec -i -n heimdall "$GRAFANA_POD" -c grafana -- \
-  curl -s -o /dev/null -w '%{http_code}\n' --config - http://localhost:3000/api/org
+# 4. The OLD password is refused
+expect "old password rejected" \
+  "$(printf 'user = "admin:%s"\n' "$GRAFANA_PW_OLD" | code --config - http://localhost:3000/api/org)" 401
 ```
 
 Check 4 returning `200` means the reset did not take: the value is in the Secret and in the environment, but Grafana's database still holds the old credential. Re-run step 4 and confirm the CLI reported success rather than a config error.
@@ -178,11 +200,22 @@ Then run step 1 with a new `GRAFANA_PW`, force the refresh, and **wait for the S
 kubectl annotate externalsecret grafana-admin-credentials -n heimdall \
   force-sync="$(date +%s)" --overwrite
 
-# Poll until ESO has propagated the new value.
-until [ "$(kubectl get secret grafana-admin-credentials -n heimdall \
-            -o jsonpath='{.data.admin-password}' | base64 -d)" = "$GRAFANA_PW" ]; do
+# Poll until ESO has propagated the new value, with a deadline. A refresh can
+# fail outright — a sealed OpenBao, a broken ClusterSecretStore — and an
+# unbounded wait would hang instead of saying so.
+synced=false
+deadline=$((SECONDS + 120))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  current=$(kubectl get secret grafana-admin-credentials -n heimdall \
+    -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d)
+  if [ "$current" = "$GRAFANA_PW" ]; then synced=true; break; fi
   sleep 2
 done
+
+if [ "$synced" != true ]; then
+  echo "ESO did not propagate within 120s — check: kubectl describe externalsecret grafana-admin-credentials -n heimdall" >&2
+  false
+fi
 ```
 
 Now run step 4, then step 5 with both `GRAFANA_PW` and `GRAFANA_PW_OLD` set.
