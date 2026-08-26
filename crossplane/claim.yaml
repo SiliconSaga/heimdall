@@ -9,9 +9,13 @@ spec:
     # by the composition pipeline. Set them here only to override the cluster
     # default for this specific claim.
     thanosEnabled: false
-    # The externally watched estate. Set explicitly rather than defaulted in the
-    # XRD, so a cluster that cannot reach these hosts simply does not probe them
-    # instead of reporting them down at the watched tier forever.
+    # OPTS IN to probing the externally watched estate — Artifactory, Jenkins
+    # and ArgoCD. This cluster can reach those hosts, so it watches them.
+    #
+    # Omit or clear this on any cluster that cannot: the probes would fail
+    # continuously and report all three down at the watched tier, which is the
+    # loudest thing Heimdall sends. The XRD defaults it to empty for that
+    # reason, so opting in is always a deliberate act by a claim.
     watchedDomain: terasology.io
     # Reduced from 15d → 7d as a stopgap until the S3/Garage backend lands;
     # tracks the 2026-05-15 Prometheus crashloop incident response. See
