@@ -85,6 +85,46 @@ spec:
                 # TargetDown warnings.
                 coreDns:
                   enabled: {{ ne $env "gke" }}
+                # ── Keep the observability stack itself off BestEffort ─────
+                # These three ship with no resource requests, so they are
+                # BestEffort and get whatever CPU is left over. On a contended
+                # node that is not enough to answer their own liveness probes:
+                # kube-state-metrics reached 196 restarts and node-exporter 929,
+                # both killed by "context deadline exceeded" on /livez, with
+                # Prometheus abandoning scrapes mid-flight ("write: broken pipe").
+                #
+                # kube-state-metrics matters most — it backs every Kube* alert
+                # rule and most of the Overview dashboard, so when it is being
+                # restarted the monitoring goes quietly blind rather than
+                # reporting a problem.
+                #
+                # node-exporter is a DaemonSet, so its request applies per node
+                # and a Pending DaemonSet pod cannot trigger a cluster scale-up.
+                # Kept deliberately small for that reason.
+                kube-state-metrics:
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 128Mi
+                prometheus-node-exporter:
+                  resources:
+                    requests:
+                      # 10m, not the 20m first tried: a DaemonSet pod cannot
+                      # trigger a cluster scale-up, so any node too full to fit
+                      # the request simply loses node metrics for good. The
+                      # tightest node had 12m free and stranded a pod.
+                      #
+                      # Even 10m matters — it is the difference between
+                      # BestEffort and Burstable, which is what decides CFS
+                      # share and eviction order. Raise it once the idle
+                      # reservations on the packed nodes are freed.
+                      cpu: 10m
+                      memory: 32Mi
+                prometheusOperator:
+                  resources:
+                    requests:
+                      cpu: 25m
+                      memory: 96Mi
                 prometheus:
                   prometheusSpec:
                     {{- if eq $env "gke" }}
@@ -179,6 +219,21 @@ spec:
                         cpu: 250m
                         memory: 256Mi
                   config:
+                    # Alerts fan out to THREE ntfy topics, not one. A single topic
+                    # collapses on Android into "N notifications" with no way to
+                    # treat a down service differently from routine node chatter;
+                    # separate topics get their own notification group AND their
+                    # own per-topic sound/DND settings in the app, which is the
+                    # only lever that survives the phone overriding the server.
+                    #
+                    # Tiers, deliberately narrow at the top:
+                    #   2  heimdall-info     cluster chatter — capacity, saturation
+                    #   3  heimdall-workload something should be running and isn't
+                    #   4  heimdall-watched  a named service we explicitly watch
+                    #   5  (unused)          reserved for on-call; nothing earns it yet
+                    #
+                    # 5 is the only priority that pierces Do Not Disturb, so it stays
+                    # empty until the alerts have earned enough trust to wake someone.
                     route:
                       group_by: ['alertname', 'namespace']
                       group_wait: 30s
@@ -186,23 +241,38 @@ spec:
                       repeat_interval: 4h
                       receiver: 'null'
                       routes:
-                        - matchers: ['severity = "critical"']
-                          receiver: ntfy-critical
+                        # Tier 4 — services carrying watched="true" on the series.
+                        # First match wins, so this outranks severity entirely: a
+                        # watched service being down is the loudest thing we send.
+                        - matchers: ['watched = "true"']
+                          receiver: ntfy-watched
                           repeat_interval: 1h
-                        - matchers: ['severity = "warning"']
-                          receiver: ntfy-warning
+                        # Tier 3 — workload health. These are the kube-prometheus
+                        # alerts that mean "something should be running and isn't",
+                        # which is a different question from "the cluster is busy".
+                        - matchers: ['alertname =~ "KubePod.*|KubeContainerWaiting|KubeDeployment.*|KubeStatefulSet.*|KubeDaemonSet.*|KubeJob.*|KubeHpa.*"']
+                          receiver: ntfy-workload
+                        # Tier 2 — everything else that still warrants a look.
+                        # info/none severities keep falling through to 'null'
+                        # (Watchdog, InfoInhibitor) so they never reach the phone.
+                        - matchers: ['severity =~ "warning|critical"']
+                          receiver: ntfy-info
                     receivers:
-                      # blackhole for non-critical/warning alerts; quotes are
+                      # blackhole for anything below warning; quotes are
                       # load-bearing — bare null parses as YAML nil and the
                       # route's receiver ref would no longer match.
                       - name: 'null'
-                      - name: ntfy-warning
+                      - name: ntfy-info
                         webhook_configs:
-                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts?template=heimdall"
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-info?template=heimdall-info"
                             send_resolved: true
-                      - name: ntfy-critical
+                      - name: ntfy-workload
                         webhook_configs:
-                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-alerts?template=heimdall"
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-workload?template=heimdall-workload"
+                            send_resolved: true
+                      - name: ntfy-watched
+                        webhook_configs:
+                          - url: "http://ntfy.ntfy.svc.cluster.local/heimdall-watched?template=heimdall-watched"
                             send_resolved: true
                           {{- if .observed.composite.resource.spec.parameters.knarrWebhookUrl }}
                           - url: "{{ .observed.composite.resource.spec.parameters.knarrWebhookUrl }}"
@@ -481,7 +551,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
-                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} in the heimdall namespace has been above 80% utilization for 15 minutes. This is the precursor to the 2026-05-15 Prometheus WAL-full crashloop incident — investigate disk pressure, retention settings, or expand the PVC.` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} is over 80% full. Check retention settings or expand it.` | quote }}
                     - alert: HeimdallPVCCritical
                       expr: |
                         (kubelet_volume_stats_used_bytes{namespace="heimdall"}
@@ -492,7 +562,103 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full — imminent out-of-space` | quote }}
-                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} above 90% utilization for 5 minutes. Out-of-space and pod crashloop are imminent. Expand the PVC immediately or reduce retentionDays.` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} is over 90% full. Expand it or reduce retentionDays.` | quote }}
+                  # Data-service durability. The pvc-fill group above is scoped
+                  # to namespace=heimdall, so database volumes in tenant
+                  # namespaces had no fill alerting at all until this group.
+                  #
+                  # Scope differs per rule, deliberately. Fill applies to every
+                  # volume, because running out of space is bad for anything.
+                  # Shrink and age match PostgreSQL data volumes by name,
+                  # because the semantics only hold there: Postgres does not
+                  # free large amounts of space on its own, whereas Redis
+                  # rewriting an RDB or Kafka expiring segments legitimately
+                  # drops usage, and alerting on those would be noise. pgBackRest
+                  # repos (*-repo1) are excluded from shrink for the same reason.
+                  #
+                  # No pg_* metrics exist on this cluster — there is no
+                  # PostgreSQL exporter — so these infer database health from
+                  # volume behaviour rather than reading it from the engine.
+                  - name: heimdall.data-services
+                    interval: 1m
+                    rules:
+                    - alert: HeimdallDatabaseVolumeShrank
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*"}
+                         / (kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*"} offset 1h)) < 0.5
+                      for: 10m
+                      labels:
+                        severity: critical
+                        component: data-services
+                        # Routes to the watched tier deliberately. Severity alone
+                        # lands in the silent topic, and data disappearing is the
+                        # one thing that should not wait to be noticed.
+                        watched: "true"
+                      annotations:
+                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} lost more than half its data` | quote }}
+                        description: {{ `Usage fell to {{ $value | humanizePercentage }} of an hour ago. Check the cluster before anything writes over it.` | quote }}
+                    - alert: HeimdallDatabaseVolumeRecreated
+                      expr: |
+                        (time() - kube_persistentvolumeclaim_created{persistentvolumeclaim=~".*pgdata|data-.*postgresql.*"}) < 900
+                      for: 2m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Database volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is new` | quote }}
+                        description: {{ `A fresh volume means fresh data. Expected when provisioning, otherwise the old data is gone.` | quote }}
+                    # Fill alerting covers EVERY volume outside heimdall rather
+                    # than matching database name patterns.
+                    #
+                    # Review found the pattern silently excluded real data
+                    # volumes — Valkey, Kafka, Chroma and OpenBao all store
+                    # state and none match a postgres-shaped name. Enumerating
+                    # engines would leave the next one uncovered the same way,
+                    # and a volume running out of space is bad regardless of
+                    # what is on it, so there is nothing to gain by narrowing.
+                    # heimdall's own storage is excluded because the
+                    # heimdall.pvc-fill group above already covers it at its own
+                    # thresholds.
+                    - alert: HeimdallVolumeFillingUp
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{namespace!="heimdall"}
+                         / kubelet_volume_stats_capacity_bytes{namespace!="heimdall"}) > 0.85
+                      for: 15m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        description: {{ `Expand it or reclaim space before it fills.` | quote }}
+                    - alert: HeimdallVolumeCritical
+                      expr: |
+                        (kubelet_volume_stats_used_bytes{namespace!="heimdall"}
+                         / kubelet_volume_stats_capacity_bytes{namespace!="heimdall"}) > 0.93
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: data-services
+                        watched: "true"
+                      annotations:
+                        summary: {{ `Volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full` | quote }}
+                        description: {{ `A full volume stops writes and can need manual recovery. Expand it now.` | quote }}
+                    - alert: HeimdallDatabaseBackupFailed
+                      # Scoped to the last 24h. kube_job_status_failed stays >0
+                      # for as long as the Job object exists, so an unscoped
+                      # rule fires forever after one failure and has to be
+                      # silenced — which is how a real second failure gets
+                      # missed. A day is longer than the daily backup interval,
+                      # so a still-failing schedule keeps re-firing on its own.
+                      expr: |
+                        kube_job_status_failed{job_name=~".*-backup-.*"} > 0
+                        and on(namespace, job_name) (time() - kube_job_created) < 86400
+                      for: 5m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Backup job {{ $labels.namespace }}/{{ $labels.job_name }} failed` | quote }}
+                        description: {{ `A failed backup is only discovered during a restore unless it is alerted on.` | quote }}
                   - name: heimdall.prometheus-health
                     interval: 1m
                     rules:
@@ -508,7 +674,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus pod {{ $labels.pod }} restarted more than 3 times in 15 minutes` | quote }}
-                        description: {{ `The pod restarted {{ $value }} times in 15 minutes — restart-storm pattern. Check pod logs for "no space left on device", WAL corruption, or OOMKilled. Matches the 2026-05-15 incident shape.` | quote }}
+                        description: {{ `Restarted {{ $value }} times in 15 minutes. Check pod logs for disk-full, WAL corruption, or OOMKilled.` | quote }}
                     - alert: HeimdallPrometheusWALCorruption
                       expr: increase(prometheus_tsdb_wal_corruptions_total{namespace="heimdall"}[10m]) > 0
                       for: 0m
@@ -517,7 +683,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus TSDB WAL corruption detected on {{ $labels.instance }}` | quote }}
-                        description: {{ `{{ $value }} WAL corruption events reported in the last 10 minutes. Data loss likely; investigate disk health and Prometheus logs.` | quote }}
+                        description: {{ `{{ $value }} WAL corruption events in 10 minutes. Data loss likely; check disk health.` | quote }}
                     - alert: HeimdallPrometheusTSDBCompactionFailures
                       expr: increase(prometheus_tsdb_compactions_failed_total{namespace="heimdall"}[1h]) > 0
                       for: 0m
@@ -526,7 +692,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus TSDB compaction failures on {{ $labels.instance }}` | quote }}
-                        description: {{ `{{ $value }} compaction failures in the last hour. Often a precursor to disk pressure or storage backend issues.` | quote }}
+                        description: {{ `{{ $value }} compaction failures in the last hour. Often precedes disk pressure.` | quote }}
                   # Black-box probe alerts, in two tiers.
                   #
                   # Probe discovery is cluster-wide, so ANY Probe anywhere would
@@ -546,7 +712,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Watched service {{ $labels.instance }} is unreachable` | quote }}
-                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. 3m rides out a rolling restart or brief node blip while still paging within minutes; the 2026-07-27 Artifactory outage would have fired here and stayed firing for 14 hours.` | quote }}
+                        description: {{ `{{ $labels.instance }} has failed its probe for 3 minutes.` | quote }}
                     - alert: HeimdallProbedServiceDown
                       expr: probe_success{watched!="true"} == 0
                       for: 3m
@@ -555,7 +721,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Probed service {{ $labels.instance }} is unreachable` | quote }}
-                        description: {{ `The black-box probe for {{ $labels.instance }} has failed for 3 minutes. This probe is not marked watched, so it notifies quietly rather than piercing Do Not Disturb — add "watched: true" to its staticConfig labels to promote it to critical.` | quote }}
+                        description: {{ `{{ $labels.instance }} has failed its probe for 3 minutes. Set watched=true on its staticConfig labels to raise it to critical.` | quote }}
                     # probe_success == 0 cannot fire if the series stops existing.
                     # These two cover that blind spot: the exporter being
                     # unscrapeable, or every probe series vanishing at once.
@@ -567,7 +733,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Prometheus cannot scrape probe job {{ $labels.job }}` | quote }}
-                        description: {{ `The blackbox exporter is unreachable for this probe, so probe_success is stale or absent and the down-alerts above are blind. Check the heimdall-blackbox alias Service and the exporter pod.` | quote }}
+                        description: {{ `The blackbox exporter is unreachable, so probe alerts are blind. Check the heimdall-blackbox Service and the exporter pod.` | quote }}
                     - alert: HeimdallProbePipelineDown
                       # Scoped to Probe-generated jobs rather than bare
                       # absent(probe_success): any other exporter emitting a
@@ -580,7 +746,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `No probe_success series exist at all` | quote }}
-                        description: {{ `Every black-box probe series has disappeared — the exporter, the Probe CRs, or probe discovery is broken. All service-reachability alerting is silently dead until this clears.` | quote }}
+                        description: {{ `All probe series have disappeared. Service-reachability alerting is dead until this clears.` | quote }}
                     - alert: HeimdallWatchedServiceSlow
                       expr: probe_duration_seconds > 5
                       for: 10m
@@ -589,7 +755,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `Watched service {{ $labels.instance }} is responding slowly` | quote }}
-                        description: {{ `Probe duration has exceeded 5s for 10 minutes ({{ $value }}s). Often the leading edge of resource starvation before an outright failure.` | quote }}
+                        description: {{ `Probe duration over 5s for 10 minutes ({{ $value }}s). Often precedes an outright failure.` | quote }}
                     - alert: HeimdallCertExpiringSoon
                       expr: probe_ssl_earliest_cert_expiry - time() < 14 * 24 * 3600
                       for: 1h
@@ -598,7 +764,7 @@ spec:
                         component: heimdall
                       annotations:
                         summary: {{ `TLS certificate for {{ $labels.instance }} expires in under 14 days` | quote }}
-                        description: {{ `cert-manager should renew automatically; this firing means renewal is not happening and manual intervention is needed before expiry.` | quote }}
+                        description: {{ `Certificate renewal is not happening. Manual intervention needed before expiry.` | quote }}
 
   # ──────────────────────────────────────────────────────────
   # Step 3.6: Blackbox Exporter — black-box service probing
@@ -622,6 +788,23 @@ spec:
       inline:
         template: |
           {{- $name := .observed.composite.resource.metadata.name -}}
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $domain := .observed.composite.resource.spec.parameters.domain | default $identity.domain -}}
+          {{- /*
+            Watched services sit on their own domain, NOT the platform's.
+            Grafana is platform ingress and follows $domain; Artifactory,
+            Jenkins and ArgoCD are pre-existing services that do not. Folding
+            them into $domain would silently repoint every probe at a host
+            that does not exist and report the services as down.
+          */ -}}
+          {{- /*
+            No `| default` here, deliberately. Sprig's default fires on the
+            EMPTY STRING as well as on absent, so a claim explicitly setting
+            watchedDomain: "" to disable these probes would have the fallback
+            substituted straight back in and probe the external estate anyway.
+            The XRD carries the default instead, where "" means "" .
+          */ -}}
+          {{- $watchedDomain := .observed.composite.resource.spec.parameters.watchedDomain -}}
           apiVersion: helm.crossplane.io/v1beta1
           kind: Release
           metadata:
@@ -689,6 +872,7 @@ spec:
                     app.kubernetes.io/name: prometheus-blackbox-exporter
                     app.kubernetes.io/instance: {{ $name }}-blackbox
           ---
+          {{- if $watchedDomain }}
           # First watched service. Probes the readiness endpoint rather than the
           # site root: the root serves a shell page early in Artifactory's boot,
           # so it would have reported healthy during part of the outage, while
@@ -726,11 +910,110 @@ spec:
                   targets:
                     staticConfig:
                       static:
-                      - https://artifactory.terasology.io/artifactory/api/system/ping
+                      - https://artifactory.{{ $watchedDomain }}/artifactory/api/system/ping
                       # staticConfig labels DO land on the resulting series,
                       # which is what makes severity selection possible.
                       labels:
                         watched: "true"
+                        # Human-readable name for dashboards and alert text. The
+                        # series is otherwise identified by its full probe URL,
+                        # which is unreadable on a wall display. Optional: panels
+                        # fall back to the Probe's own name when it is absent.
+                        service: "Artifactory"
+          ---
+          # Jenkins. /login is the unauthenticated 200 — the site root redirects,
+          # and anything deeper needs a session.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-jenkins
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-jenkins
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: jenkins
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://jenkins.{{ $watchedDomain }}/login
+                      labels:
+                        watched: "true"
+                        service: "Jenkins"
+          ---
+          # Legacy ArgoCD. /healthz is served unauthenticated.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-argocd
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-argocd
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: argocd
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://argocd.{{ $watchedDomain }}/healthz
+                      labels:
+                        watched: "true"
+                        service: "ArgoCD"
+          {{- end }}
+          ---
+          # Grafana — the window onto everything else, so worth knowing when it
+          # is the thing that is down. Platform ingress, so it follows $domain
+          # and is probed on every cluster regardless of watchedDomain.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-grafana
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-grafana
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: grafana
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://grafana.{{ $domain }}/api/health
+                      labels:
+                        watched: "true"
+                        service: "Grafana"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)

@@ -14,6 +14,9 @@ metadata:
 spec:
   parameters:
     thanosEnabled: false
+    # Set so the render exercises the watched-service probes. Clear it to check
+    # the opposite branch, where those probes are omitted entirely.
+    watchedDomain: terasology.io
     retentionDays: 7
     storageSize: "20Gi"
     lokiStorageSize: "5Gi"
