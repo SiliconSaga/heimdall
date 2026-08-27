@@ -329,73 +329,6 @@ data:
           }
         },
         {
-          "type": "stat",
-          "id": 65,
-          "title": "Game fleet DNS",
-          "description": "play.terasology.org is a single A record pointed at one node's external IP, and every hosted game server sits behind it — they are distinguished only by port. So the address ceasing to be a node address takes the whole fleet offline by name at once, which is why this is one tile here rather than a panel on each game's dashboard. Reads the ALERT rather than re-testing the address, so this tile and the page cannot disagree. The rule lives in the tafl component (kustomize/fleet/published-ip.yaml). DRIFT does not mean the servers are down — under externalTrafficPolicy: Cluster any node address serves the NodePorts, so the fix is repointing DNS, not touching a game.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "gridPos": {
-            "h": 3,
-            "w": 6,
-            "x": 0,
-            "y": 6
-          },
-          "targets": [
-            {
-              "refId": "A",
-              "expr": "count(ALERTS{alertname=\"GameFleetPublishedIPDrift\", alertstate=\"firing\"}) or vector(0)",
-              "instant": true
-            }
-          ],
-          "options": {
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "colorMode": "background",
-            "graphMode": "none",
-            "textMode": "value",
-            "justifyMode": "center"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "mappings": [
-                {
-                  "type": "value",
-                  "options": {
-                    "0": {
-                      "text": "OK",
-                      "color": "#0ca30c",
-                      "index": 0
-                    },
-                    "1": {
-                      "text": "DRIFT",
-                      "color": "#d03b3b",
-                      "index": 1
-                    }
-                  }
-                }
-              ],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "#898781",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          }
-        },
-        {
           "type": "row",
           "id": 5,
           "title": "Platform components",
@@ -403,7 +336,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 9
+            "y": 6
           },
           "collapsed": false,
           "panels": []
@@ -421,7 +354,7 @@ data:
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 10
+            "y": 7
           },
           "targets": [
             {
@@ -507,9 +440,9 @@ data:
           },
           "gridPos": {
             "h": 6,
-            "w": 16,
+            "w": 12,
             "x": 8,
-            "y": 10
+            "y": 7
           },
           "targets": [
             {
@@ -655,6 +588,73 @@ data:
           }
         },
         {
+          "type": "stat",
+          "id": 65,
+          "title": "Game fleet DNS",
+          "description": "play.terasology.org is a single A record pointed at one node's external IP, and every hosted game server sits behind it — they are distinguished only by port. So the address ceasing to be a node address takes the whole fleet offline by name at once, which is why this is one tile here rather than a panel on each game's dashboard. Reads the ALERT rather than re-testing the address, so this tile and the page cannot disagree. The rule lives in the tafl component (kustomize/fleet/published-ip.yaml). DRIFT does not mean the servers are down — under externalTrafficPolicy: Cluster any node address serves the NodePorts, so the fix is repointing DNS, not touching a game. Sized and placed like the watched-service tiles rather than given its own row: Readiness is a timeseries that reads fine at 12 columns, so the width it was not using pays for this without pushing anything down the page.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 20,
+            "y": 7
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(ALERTS{alertname=\"GameFleetPublishedIPDrift\", alertstate=\"firing\"}) or vector(0)",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "OK",
+                      "color": "#0ca30c",
+                      "index": 0
+                    },
+                    "1": {
+                      "text": "DRIFT",
+                      "color": "#d03b3b",
+                      "index": 1
+                    }
+                  }
+                }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#898781",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
           "type": "row",
           "id": 2,
           "title": "Cluster capacity — requested vs used",
@@ -662,7 +662,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 16
+            "y": 13
           },
           "collapsed": false,
           "panels": []
@@ -680,7 +680,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 17
+            "y": 14
           },
           "targets": [
             {
@@ -830,7 +830,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 17
+            "y": 14
           },
           "targets": [
             {
@@ -980,7 +980,7 @@ data:
             "h": 7,
             "w": 12,
             "x": 0,
-            "y": 25
+            "y": 22
           },
           "targets": [
             {
@@ -1109,7 +1109,7 @@ data:
             "h": 7,
             "w": 8,
             "x": 12,
-            "y": 25
+            "y": 22
           },
           "targets": [
             {
@@ -1173,7 +1173,7 @@ data:
             "h": 7,
             "w": 4,
             "x": 20,
-            "y": 25
+            "y": 22
           },
           "targets": [
             {
@@ -1228,7 +1228,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 32
+            "y": 29
           },
           "collapsed": false,
           "panels": []
@@ -1246,7 +1246,7 @@ data:
             "h": 9,
             "w": 24,
             "x": 0,
-            "y": 33
+            "y": 30
           },
           "targets": [
             {
@@ -1311,7 +1311,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 42
+            "y": 39
           },
           "collapsed": false,
           "panels": []
@@ -1329,7 +1329,7 @@ data:
             "h": 6,
             "w": 12,
             "x": 0,
-            "y": 43
+            "y": 40
           },
           "targets": [
             {
@@ -1399,7 +1399,7 @@ data:
             "h": 6,
             "w": 12,
             "x": 12,
-            "y": 43
+            "y": 40
           },
           "targets": [
             {
@@ -1462,7 +1462,7 @@ data:
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 49
+            "y": 46
           },
           "targets": [
             {
@@ -1526,7 +1526,7 @@ data:
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 49
+            "y": 46
           },
           "targets": [
             {
@@ -1596,7 +1596,7 @@ data:
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 49
+            "y": 46
           },
           "targets": [
             {
@@ -1661,7 +1661,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 55
+            "y": 52
           },
           "collapsed": false,
           "panels": []
@@ -1679,7 +1679,7 @@ data:
             "h": 4,
             "w": 8,
             "x": 0,
-            "y": 56
+            "y": 53
           },
           "targets": [
             {
@@ -1735,7 +1735,7 @@ data:
             "h": 8,
             "w": 16,
             "x": 8,
-            "y": 56
+            "y": 53
           },
           "targets": [
             {
@@ -1873,7 +1873,7 @@ data:
             "h": 4,
             "w": 8,
             "x": 0,
-            "y": 60
+            "y": 57
           },
           "targets": [
             {
