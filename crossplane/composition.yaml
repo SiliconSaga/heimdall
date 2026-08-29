@@ -518,6 +518,8 @@ spec:
       inline:
         template: |
           {{- $name := .observed.composite.resource.metadata.name -}}
+          {{- $identity := index .context "apiextensions.crossplane.io/environment" -}}
+          {{- $env := .observed.composite.resource.spec.parameters.environment | default $identity.environment -}}
           apiVersion: kubernetes.crossplane.io/v1alpha2
           kind: Object
           metadata:
@@ -669,8 +671,22 @@ spec:
                       annotations:
                         summary: {{ `Backup job {{ $labels.namespace }}/{{ $labels.job_name }} failed` | quote }}
                         description: {{ `A failed backup is only discovered during a restore unless it is alerted on.` | quote }}
-                  # Cluster-wide Velero backups (nordri, GKE only — homelab's
-                  # Velero targets Garage and is not scheduled).
+                  {{- if eq $env "gke" }}
+                  # Cluster-wide Velero backups — GKE ONLY, and the gate above is
+                  # load-bearing rather than tidiness.
+                  #
+                  # Homelab runs velero-homelab.yaml, which has no `schedules:` at
+                  # all: Velero is installed there against Garage but nothing tells
+                  # it to back anything up. So velero_backup_last_successful_timestamp
+                  # is legitimately absent, and VeleroNoBackupsEverSucceeded would go
+                  # true 30 minutes after every homelab deploy and page — critical,
+                  # watched, repeating — about a backup nobody asked for.
+                  #
+                  # An absent() rule is exactly the kind that cannot tell "broken"
+                  # from "deliberately not configured", so the scope has to come from
+                  # outside the expression. Ungating this without also scheduling
+                  # homelab backups recreates the alert-fatigue problem the tiered
+                  # routing exists to avoid.
                   #
                   # Every rule here exists because Velero was installed on GKE,
                   # reported healthy, and stored nothing for a long time: it was
@@ -739,6 +755,7 @@ spec:
                       annotations:
                         summary: {{ `Velero backup partially failed on schedule {{ $labels.schedule }}` | quote }}
                         description: {{ `A partial failure still reports as a backup and refreshes the staleness clock, but some items were not captured. Check: velero backup describe` | quote }}
+                  {{- end }}
                   - name: heimdall.prometheus-health
                     interval: 1m
                     rules:
