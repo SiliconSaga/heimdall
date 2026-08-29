@@ -669,6 +669,76 @@ spec:
                       annotations:
                         summary: {{ `Backup job {{ $labels.namespace }}/{{ $labels.job_name }} failed` | quote }}
                         description: {{ `A failed backup is only discovered during a restore unless it is alerted on.` | quote }}
+                  # Cluster-wide Velero backups (nordri, GKE only — homelab's
+                  # Velero targets Garage and is not scheduled).
+                  #
+                  # Every rule here exists because Velero was installed on GKE,
+                  # reported healthy, and stored nothing for a long time: it was
+                  # pointed at a Garage endpoint that does not resolve there and
+                  # had no Schedule at all. Nothing noticed, because "installed"
+                  # and "working" look identical from outside. These alerts are
+                  # what makes those two states distinguishable.
+                  #
+                  # Deliberately reading velero_backup_last_successful_timestamp
+                  # rather than velero_backup_last_status: upstream #6809 has the
+                  # latter reporting failure for backups that actually succeeded,
+                  # and "when did a backup last work" is the question anyway.
+                  - name: heimdall.velero
+                    interval: 1m
+                    rules:
+                    # ── The absent() guard, and the most important rule here ──
+                    # velero_backup_last_successful_timestamp does not exist until
+                    # a backup has succeeded ONCE. So every staleness comparison
+                    # below is silent on a Velero that has never worked — the
+                    # exact failure being fixed. This is the only rule that can
+                    # catch that, and it is why it pages.
+                    #
+                    # Also covers the scrape disappearing entirely (ServiceMonitor
+                    # removed, metrics disabled, pod gone).
+                    - alert: VeleroNoBackupsEverSucceeded
+                      expr: absent(velero_backup_last_successful_timestamp)
+                      for: 30m
+                      labels:
+                        severity: critical
+                        component: backups
+                        watched: "true"
+                      annotations:
+                        summary: {{ `Velero has no record of any successful backup` | quote }}
+                        description: {{ `velero_backup_last_successful_timestamp is absent — either no backup has ever succeeded, or Velero is not being scraped. An install that looks healthy and stores nothing is the failure this alert exists for. Check: kubectl -n velero get backupstoragelocation default` | quote }}
+                    # 36h, not 24h: one missed nightly run is the signal, and a
+                    # tighter window would page on ordinary schedule jitter.
+                    - alert: VeleroBackupStale
+                      expr: |
+                        (time() - velero_backup_last_successful_timestamp) > 129600
+                      for: 15m
+                      labels:
+                        severity: critical
+                        component: backups
+                        watched: "true"
+                      annotations:
+                        summary: {{ `Velero schedule {{ $labels.schedule }} has not succeeded in over 36h` | quote }}
+                        description: {{ `Last success was {{ $value | humanizeDuration }} ago against a daily schedule, so at least one night was missed.` | quote }}
+                    - alert: VeleroBackupFailing
+                      expr: increase(velero_backup_failure_total[6h]) > 0
+                      for: 5m
+                      labels:
+                        severity: warning
+                        component: backups
+                      annotations:
+                        summary: {{ `Velero backup failures on schedule {{ $labels.schedule }}` | quote }}
+                        description: {{ `{{ $value }} failure(s) in 6h. A backup that fails is only discovered during a restore unless it is alerted on.` | quote }}
+                    # partialFailure completes and is counted a success by the
+                    # staleness rules above, while having skipped items. Warning
+                    # rather than critical: there IS a backup, it is just holed.
+                    - alert: VeleroBackupPartiallyFailing
+                      expr: increase(velero_backup_partial_failure_total[6h]) > 0
+                      for: 5m
+                      labels:
+                        severity: warning
+                        component: backups
+                      annotations:
+                        summary: {{ `Velero backup partially failed on schedule {{ $labels.schedule }}` | quote }}
+                        description: {{ `A partial failure still reports as a backup and refreshes the staleness clock, but some items were not captured. Check: velero backup describe` | quote }}
                   - name: heimdall.prometheus-health
                     interval: 1m
                     rules:
