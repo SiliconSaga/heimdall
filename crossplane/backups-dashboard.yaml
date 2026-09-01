@@ -1,0 +1,211 @@
+# Heimdall Backups dashboard.
+#
+# One page answering "is anything actually being backed up, and where is storage
+# going". It exists because Velero ran on GKE for a long time reporting healthy
+# while storing nothing — an install that looks present is harder to notice than
+# one that is missing, and no dashboard showed the difference.
+#
+# Delivered as a plain ConfigMap for the same reason as overview-dashboard.yaml:
+# the Grafana sidecar watches `grafana_dashboard: "1"` cluster-wide, so this needs
+# no Crossplane composition parameter and no rendering step.
+#
+# EVERY query here uses a metric that was verified to exist rather than assumed:
+#   velero_backup_last_successful_timestamp{schedule}  gauge, unix seconds
+#   velero_backup_failure_total{schedule}              counter
+#   velero_backup_partial_failure_total{schedule}      counter
+#   velero_backup_success_total{schedule}              counter
+#   velero_backup_duration_seconds                     histogram
+#   kubelet_volume_stats_used_bytes / _capacity_bytes  in-cluster PVs
+#
+# Deliberately NOT here: object-storage bucket size. Velero exposes no such
+# metric, and GCS bucket bytes live in Cloud Monitoring
+# (storage.googleapis.com/storage/v2/total_bytes), which nothing on this cluster
+# scrapes. Adding a "bucket size" panel today would mean inventing a metric name
+# and shipping a panel that renders "No data" forever — the same class of defect
+# as the alert that queried a Caddy metric which never existed. See the
+# follow-up in nordri/docs/velero-gke.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heimdall-backups-dashboard
+  namespace: heimdall
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: heimdall
+    app.kubernetes.io/component: dashboard
+data:
+  heimdall-backups.json: |
+    {
+      "uid": "heimdall-backups",
+      "title": "Heimdall Backups",
+      "description": "Velero backup health and in-cluster volume growth. Bucket-size panels are absent on purpose — no exporter provides GCS object-storage metrics on this cluster yet.",
+      "tags": [
+        "heimdall",
+        "backups"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "refresh": "1m",
+      "time": {
+        "from": "now-7d",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "row",
+          "id": 1,
+          "title": "Velero",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+        },
+        {
+          "type": "stat",
+          "id": 2,
+          "title": "Time since last successful backup",
+          "description": "Reads velero_backup_last_successful_timestamp, not velero_backup_last_status — upstream velero#6809 has last_status reporting failure for backups that actually succeeded. An empty tile is NOT healthy: the metric does not exist until a backup has succeeded once, which is exactly the state VeleroNoBackupsEverSucceeded alerts on. Instant query, because a stat tile means 'right now' — a range query would reduce a window and draw a value from before the thing you just changed.",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "time() - velero_backup_last_successful_timestamp",
+              "legendFormat": "{{schedule}}",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 90000 },
+                  { "color": "red", "value": 129600 }
+                ]
+              },
+              "noValue": "NEVER — no successful backup on record"
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 3,
+          "title": "Backup outcomes per day",
+          "description": "Successes, failures and partial failures. A partial failure still completes and still refreshes the staleness clock, so it is easy to miss — it is charted separately for that reason.",
+          "gridPos": { "h": 6, "w": 16, "x": 8, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "increase(velero_backup_success_total[1d])",
+              "legendFormat": "success — {{schedule}}"
+            },
+            {
+              "refId": "B",
+              "expr": "increase(velero_backup_failure_total[1d])",
+              "legendFormat": "failure — {{schedule}}"
+            },
+            {
+              "refId": "C",
+              "expr": "increase(velero_backup_partial_failure_total[1d])",
+              "legendFormat": "partial — {{schedule}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } }
+            }
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 4,
+          "title": "Backup duration",
+          "description": "Rising duration on a roughly constant cluster is the early signal that a backup is on its way to timing out.",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 7 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le, schedule) (rate(velero_backup_duration_seconds_bucket[1d])))",
+              "legendFormat": "p95 — {{schedule}}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "type": "timeseries",
+          "id": 5,
+          "title": "Items backed up",
+          "description": "A sharp drop without a matching drop in cluster size means the backup silently stopped covering something.",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 7 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "velero_backup_items_total",
+              "legendFormat": "{{schedule}}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+        {
+          "type": "row",
+          "id": 10,
+          "title": "In-cluster volume growth (what a snapshot has to copy)",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 }
+        },
+        {
+          "type": "timeseries",
+          "id": 11,
+          "title": "Used bytes per PVC",
+          "description": "Persistent-disk snapshots are incremental, so the cost driver is total provisioned data and its rate of change rather than the snapshot count. This is the closest available proxy for where a storage bill would come from, until an exporter provides real bucket metrics.",
+          "gridPos": { "h": 8, "w": 16, "x": 0, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(10, sum by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes))",
+              "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "type": "stat",
+          "id": 12,
+          "title": "Total provisioned / used",
+          "description": "Capacity is what GCP bills for on a persistent disk; used is what a snapshot actually copies. A large gap means money spent on empty space.",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kubelet_volume_stats_capacity_bytes)",
+              "legendFormat": "provisioned",
+              "instant": true
+            },
+            {
+              "refId": "B",
+              "expr": "sum(kubelet_volume_stats_used_bytes)",
+              "legendFormat": "used",
+              "instant": true
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        }
+      ]
+    }
