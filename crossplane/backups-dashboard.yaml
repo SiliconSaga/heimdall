@@ -17,6 +17,19 @@
 #   velero_backup_duration_seconds                     histogram
 #   kubelet_volume_stats_used_bytes / _capacity_bytes  in-cluster PVs
 #
+# ⚠ EVERY velero_* query here filters schedule!="" — keep that on any new one.
+# Velero emits each of these metrics TWICE: once per Schedule, and once with
+# schedule="" covering ad-hoc backups made by hand. The empty-label series is not
+# a duplicate, it is a different thing that behaves badly here:
+#   * last_successful_timestamp is a process-lifetime gauge that Velero never
+#     clears, so it outlives the backup it describes and ages forever;
+#   * nothing refreshes it unless someone runs another manual backup.
+# Observed 2026-09-04: an expired, deleted verification backup still read 2.00
+# days old and rendered as a red tile captioned with the entire label set —
+# Grafana's fallback when {{schedule}} resolves to an empty string. The counters
+# behaved less dramatically but doubled the series on the outcomes panel with
+# permanently-flat lines.
+#
 # Deliberately NOT here: object-storage bucket size. Velero exposes no such
 # metric, and GCS bucket bytes live in Cloud Monitoring
 # (storage.googleapis.com/storage/v2/total_bytes), which nothing on this cluster
@@ -63,13 +76,13 @@ data:
           "type": "stat",
           "id": 2,
           "title": "Time since last successful backup",
-          "description": "Reads velero_backup_last_successful_timestamp, not velero_backup_last_status — upstream velero#6809 has last_status reporting failure for backups that actually succeeded. An empty tile is NOT healthy: the metric does not exist until a backup has succeeded once, which is exactly the state VeleroNoBackupsEverSucceeded alerts on. Instant query, because a stat tile means 'right now' — a range query would reduce a window and draw a value from before the thing you just changed.",
+          "description": "Reads velero_backup_last_successful_timestamp, not velero_backup_last_status — upstream velero#6809 has last_status reporting failure for backups that actually succeeded. An empty tile is NOT healthy: the metric does not exist until a backup has succeeded once, which is exactly the state VeleroNoBackupsEverSucceeded alerts on. Instant query, because a stat tile means 'right now' — a range query would reduce a window and draw a value from before the thing you just changed. Filtered to schedule!=\"\": ad-hoc backups carry an empty schedule label, and that series is a process-lifetime gauge nothing ever refreshes, so it ages forever and shows up as a permanently-red tile labelled with the whole metric's label set (Grafana's fallback when {{schedule}} renders empty).",
           "gridPos": { "h": 6, "w": 8, "x": 0, "y": 1 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "targets": [
             {
               "refId": "A",
-              "expr": "time() - velero_backup_last_successful_timestamp",
+              "expr": "time() - velero_backup_last_successful_timestamp{schedule!=\"\"}",
               "legendFormat": "{{schedule}}",
               "instant": true
             }
@@ -98,23 +111,23 @@ data:
           "type": "timeseries",
           "id": 3,
           "title": "Backup outcomes per day",
-          "description": "Successes, failures and partial failures. A partial failure still completes and still refreshes the staleness clock, so it is easy to miss — it is charted separately for that reason.",
+          "description": "Successes, failures and partial failures. A partial failure still completes and still refreshes the staleness clock, so it is easy to miss — it is charted separately for that reason. Filtered to schedule!=\"\": every one of these counters also exists with an empty schedule label for ad-hoc backups, which doubled the series count with three permanently-flat lines and made the panel look far busier than it was.",
           "gridPos": { "h": 6, "w": 16, "x": 8, "y": 1 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "targets": [
             {
               "refId": "A",
-              "expr": "increase(velero_backup_success_total[1d])",
+              "expr": "increase(velero_backup_success_total{schedule!=\"\"}[1d])",
               "legendFormat": "success — {{schedule}}"
             },
             {
               "refId": "B",
-              "expr": "increase(velero_backup_failure_total[1d])",
+              "expr": "increase(velero_backup_failure_total{schedule!=\"\"}[1d])",
               "legendFormat": "failure — {{schedule}}"
             },
             {
               "refId": "C",
-              "expr": "increase(velero_backup_partial_failure_total[1d])",
+              "expr": "increase(velero_backup_partial_failure_total{schedule!=\"\"}[1d])",
               "legendFormat": "partial — {{schedule}}"
             }
           ],
@@ -135,7 +148,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "histogram_quantile(0.95, sum by (le, schedule) (rate(velero_backup_duration_seconds_bucket[1d])))",
+              "expr": "histogram_quantile(0.95, sum by (le, schedule) (rate(velero_backup_duration_seconds_bucket{schedule!=\"\"}[1d])))",
               "legendFormat": "p95 — {{schedule}}"
             }
           ],
@@ -151,7 +164,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "velero_backup_items_total",
+              "expr": "velero_backup_items_total{schedule!=\"\"}",
               "legendFormat": "{{schedule}}"
             }
           ],
