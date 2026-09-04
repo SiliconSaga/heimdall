@@ -711,8 +711,39 @@ spec:
                     #
                     # Also covers the scrape disappearing entirely (ServiceMonitor
                     # removed, metrics disabled, pod gone).
+                    #
+                    # ── Why every rule below filters schedule!="" ──
+                    # Velero labels each metric with the SCHEDULE that produced the
+                    # backup, and an ad-hoc backup — anything created by hand rather
+                    # than by a Schedule — carries schedule="". That empty-label
+                    # series behaves differently from every other one in a way that
+                    # breaks these rules:
+                    #
+                    #   * last_successful_timestamp is a PROCESS-LIFETIME GAUGE.
+                    #     Velero sets it when a backup succeeds and never clears it,
+                    #     so it survives the backup being deleted. A one-off backup
+                    #     that has since expired leaves a timestamp frozen at the
+                    #     moment it ran.
+                    #   * Nothing ever refreshes it. schedule="" only advances when
+                    #     someone runs another manual backup, so it ages forever and
+                    #     pins VeleroBackupStale on permanently.
+                    #
+                    # Observed 2026-09-04: verify-clean-20260902, a hand-run
+                    # verification backup, had been deleted at TTL — yet
+                    # velero_backup_last_successful_timestamp{schedule=""} still read
+                    # 2.00 days old and was firing this alert at the watched tier,
+                    # while schedule="velero-daily-full" sat healthy at 12.2h.
+                    #
+                    # "A manual backup went stale" is not a condition: it was a
+                    # one-off, staleness is meaningless for it, and the only way to
+                    # silence it is to run another one. These alerts are about the
+                    # SCHEDULED backup, whose absence is what actually means data
+                    # loss.
                     - alert: VeleroNoBackupsEverSucceeded
-                      expr: absent(velero_backup_last_successful_timestamp)
+                      # The filter makes this STRICTER, and that is the point: without
+                      # it, one stray manual backup satisfies the absent() check and
+                      # masks a schedule that has never run once.
+                      expr: absent(velero_backup_last_successful_timestamp{schedule!=""})
                       for: 30m
                       labels:
                         severity: critical
@@ -725,7 +756,7 @@ spec:
                     # tighter window would page on ordinary schedule jitter.
                     - alert: VeleroBackupStale
                       expr: |
-                        (time() - velero_backup_last_successful_timestamp) > 129600
+                        (time() - velero_backup_last_successful_timestamp{schedule!=""}) > 129600
                       for: 15m
                       labels:
                         severity: critical
@@ -735,7 +766,7 @@ spec:
                         summary: {{ `Velero schedule {{ $labels.schedule }} has not succeeded in over 36h` | quote }}
                         description: {{ `Last success was {{ $value | humanizeDuration }} ago against a daily schedule, so at least one night was missed.` | quote }}
                     - alert: VeleroBackupFailing
-                      expr: increase(velero_backup_failure_total[6h]) > 0
+                      expr: increase(velero_backup_failure_total{schedule!=""}[6h]) > 0
                       for: 5m
                       labels:
                         severity: warning
@@ -747,7 +778,7 @@ spec:
                     # staleness rules above, while having skipped items. Warning
                     # rather than critical: there IS a backup, it is just holed.
                     - alert: VeleroBackupPartiallyFailing
-                      expr: increase(velero_backup_partial_failure_total[6h]) > 0
+                      expr: increase(velero_backup_partial_failure_total{schedule!=""}[6h]) > 0
                       for: 5m
                       labels:
                         severity: warning
