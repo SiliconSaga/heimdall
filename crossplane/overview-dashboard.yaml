@@ -359,37 +359,37 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"ingress-control\", pod=~\".*ingress-nginx-controller.*\"}))[$__range:1m]) * 100",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"ingress-control\", pod=~\".*ingress-nginx-controller.*\"}) or vector(0))[$__range:1m]) * 100",
               "legendFormat": "ingress",
               "instant": true
             },
             {
               "refId": "B",
-              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"jenkins\", pod=\"terajenkins-0\"}))[$__range:1m]) * 100",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"jenkins\", pod=\"terajenkins-0\"}) or vector(0))[$__range:1m]) * 100",
               "legendFormat": "jenkins",
               "instant": true
             },
             {
               "refId": "C",
-              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"argocd\", pod=~\"terargo-argocd-repo-server.*\"}))[$__range:1m]) * 100",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"argocd\", pod=~\"terargo-argocd-repo-server.*\"}) or vector(0))[$__range:1m]) * 100",
               "legendFormat": "argo repo",
               "instant": true
             },
             {
               "refId": "D",
-              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"argocd\", pod=~\"terargo-argocd-server-.*\"}))[$__range:1m]) * 100",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"argocd\", pod=~\"terargo-argocd-server-.*\"}) or vector(0))[$__range:1m]) * 100",
               "legendFormat": "argo server",
               "instant": true
             },
             {
               "refId": "E",
-              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"artifactory\", pod=\"terartifactory-artifactory-0\"}))[$__range:1m]) * 100",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"artifactory\", pod=\"terartifactory-artifactory-0\"}) or vector(0))[$__range:1m]) * 100",
               "legendFormat": "artifactory",
               "instant": true
             },
             {
               "refId": "F",
-              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"xenforo\", pod=~\"xenforo-.*\", pod!~\"xenforo-db-backup-.*\"}))[$__range:1m]) * 100",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"xenforo\", pod=~\"xenforo-.*\", pod!~\"xenforo-db-backup-.*\"}) or vector(0))[$__range:1m]) * 100",
               "legendFormat": "forum",
               "instant": true
             }
