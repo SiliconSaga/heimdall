@@ -1152,6 +1152,49 @@ spec:
                       labels:
                         watched: "true"
                         service: "Grafana"
+          ---
+          # The forum. Platform ingress on $domain like Grafana, NOT part of the
+          # watchedDomain block above — it is a service this platform hosts
+          # rather than one of the pre-existing external estate.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-forum
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-forum
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: forum
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      # The front page, deliberately, not a lightweight health
+                      # endpoint: XenForo has none, and the front page is the
+                      # one URL that exercises PHP-FPM and the database rather
+                      # than just proving Caddy is alive. Caddy answers
+                      # /healthz without touching either, so probing that would
+                      # report UP through an outage.
+                      #
+                      # http_2xx therefore also catches the maintenance state:
+                      # XenForo serves its own HTTP 503 while an install or
+                      # upgrade runs, which is genuinely "not available" and
+                      # should show DOWN.
+                      - https://forum.{{ $domain }}/
+                      labels:
+                        watched: "true"
+                        service: "Forum"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)

@@ -386,6 +386,12 @@ data:
               "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"artifactory\", pod=\"terartifactory-artifactory-0\"}))[$__range:1m]) * 100",
               "legendFormat": "artifactory",
               "instant": true
+            },
+            {
+              "refId": "F",
+              "expr": "avg_over_time((max(kube_pod_status_ready{condition=\"true\", namespace=\"xenforo\", pod=~\"xenforo-.*\", pod!~\"xenforo-db-backup-.*\"}))[$__range:1m]) * 100",
+              "legendFormat": "forum",
+              "instant": true
             }
           ],
           "options": {
