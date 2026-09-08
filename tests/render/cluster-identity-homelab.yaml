@@ -9,3 +9,4 @@ data:
   domain: localhost
   environment: homelab
   storageClass: local-path
+  maturity: bootstrap

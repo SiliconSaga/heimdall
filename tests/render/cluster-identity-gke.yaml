@@ -9,3 +9,6 @@ data:
   domain: cmdbee.org
   environment: gke
   storageClass: standard-rwo
+  maturity: bootstrap
+  gcpProject: example-project
+  gcpRegion: us-east1
