@@ -106,6 +106,28 @@ spec:
                     requests:
                       cpu: 50m
                       memory: 128Mi
+                  # ── Service labels that become metric labels ──────────────
+                  # kube-state-metrics v2 exposes NO custom object labels by
+                  # default: without an allowlist, `kube_service_labels` carries
+                  # only identifying labels and every `label_*` is dropped. That
+                  # is the right default — the label set of arbitrary objects is
+                  # unbounded cardinality — so each label has to be asked for.
+                  #
+                  # `tafl_server` is the game fleet's display name, set on each
+                  # instance's valheim-metrics Service (see kubicvalheim's
+                  # base/service-metrics.yaml). The ServiceMonitor already copies
+                  # it onto series scraped FROM that Service via targetLabels, but
+                  # that only covers a running instance: a hibernated server has no
+                  # pod, therefore no endpoints, therefore no target and no series
+                  # at all. Its state comes from kube-state-metrics instead, and
+                  # without this allowlist there is nothing to join a name onto —
+                  # so a parked server is exactly the one that cannot be labelled.
+                  #
+                  # Scoped to `services` deliberately. Allowlisting the label on
+                  # pods or deployments too would multiply it across far more
+                  # series for no additional use.
+                  metricLabelsAllowlist:
+                    - services=[tafl_server]
                 prometheus-node-exporter:
                   resources:
                     requests:
