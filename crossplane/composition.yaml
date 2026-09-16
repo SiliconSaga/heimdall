@@ -1217,6 +1217,42 @@ spec:
                       labels:
                         watched: "true"
                         service: "Forum"
+          ---
+          # Keycloak — the identity provider every SSO login will hang off.
+          # Platform ingress on $domain like Grafana and the forum. The master
+          # realm's public metadata answers 200 unauthenticated and only once
+          # Keycloak has its database, so a pod that is Running but still
+          # crash-looping on a missing DB reads DOWN here, which is the truth.
+          # Keycloak's own /health lives on the management port (9000), which
+          # the Gateway does not expose — deliberately, so it is not the probe.
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-probe-keycloak
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: probe-keycloak
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: Probe
+                metadata:
+                  name: keycloak
+                  namespace: heimdall
+                  labels:
+                    heimdall.siliconsaga.org/watched: "true"
+                spec:
+                  prober:
+                    url: heimdall-blackbox.heimdall.svc:9115
+                  module: http_2xx
+                  interval: 30s
+                  targets:
+                    staticConfig:
+                      static:
+                      - https://keycloak.{{ $domain }}/realms/master
+                      labels:
+                        watched: "true"
+                        service: "Keycloak"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: Ingress Routes (Traefik IngressRoute)
