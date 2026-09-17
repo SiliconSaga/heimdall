@@ -682,8 +682,15 @@ spec:
                       # the two conditions above would report a completed backup
                       # as failed. Excluding Jobs whose Complete condition is
                       # true means only genuinely unsuccessful backups alert.
+                      #
+                      # The name pattern covers `*-backup-*` (the database
+                      # operators' Jobs) and `*-snapshot-*`: the OpenBao Helm
+                      # chart's snapshot agent names its CronJob
+                      # `openbao-snapshot`, so its Jobs are
+                      # `openbao-snapshot-<ts>` and a failed upload would
+                      # otherwise be invisible here.
                       expr: |
-                        kube_job_status_failed{job_name=~".*-backup-.*"} > 0
+                        kube_job_status_failed{job_name=~".*-(backup|snapshot)-.*"} > 0
                         and on(namespace, job_name) (time() - kube_job_created) < 86400
                         unless on(namespace, job_name) kube_job_complete{condition="true"} == 1
                       for: 5m
@@ -693,6 +700,45 @@ spec:
                       annotations:
                         summary: {{ `Backup job {{ $labels.namespace }}/{{ $labels.job_name }} failed` | quote }}
                         description: {{ `A failed backup is only discovered during a restore unless it is alerted on.` | quote }}
+                    # ── OpenBao Raft snapshots (realm go-live design, 2026-09-16) ──
+                    # The chart's CronJob `openbao-snapshot` in namespace
+                    # `openbao` uploads a Raft snapshot daily at 05:00 UTC.
+                    # kube-state-metrics is the source: the CronJob's last
+                    # successful time, and its existence. No exporter involved.
+                    #
+                    # Not `watched`, on purpose: local data is intact and
+                    # Velero's disk snapshot of the openbao PVC still runs, so a
+                    # stalled upload is backup plumbing — the quiet tier, as
+                    # KubicValheim reasons about its own upload alerts.
+                    #
+                    # 36h, not 24h: one missed nightly run is the signal; a
+                    # tighter window fires on ordinary schedule jitter.
+                    - alert: OpenBaoSnapshotStale
+                      expr: |
+                        (time() - kube_cronjob_status_last_successful_time{namespace="openbao", cronjob="openbao-snapshot"}) > 129600
+                      for: 10m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `OpenBao Raft snapshots have stalled` | quote }}
+                        description: {{ `The openbao-snapshot CronJob last succeeded {{ $value | humanizeDuration }} ago against a daily schedule. Velero's disk snapshot still runs, so this is plumbing rather than data loss — yet. Check the latest Job: kubectl -n openbao get jobs -l app.kubernetes.io/name=openbao` | quote }}
+                    # The absent() guard, scoped by the CronJob's own existence
+                    # so a cluster that has no snapshot agent stays silent:
+                    # `unless` drops the info series once a success timestamp
+                    # exists, and kube_cronjob_status_last_successful_time is
+                    # not emitted at all until the first success.
+                    - alert: OpenBaoSnapshotNeverSucceeded
+                      expr: |
+                        kube_cronjob_info{namespace="openbao", cronjob="openbao-snapshot"}
+                        unless on(namespace, cronjob) kube_cronjob_status_last_successful_time{namespace="openbao", cronjob="openbao-snapshot"}
+                      for: 26h
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `OpenBao snapshot CronJob has never succeeded` | quote }}
+                        description: {{ `openbao-snapshot exists but no run has completed in its first day. The usual causes are the openbao-backup role missing in OpenBao (nordri openbao-configure.sh) or the openbao-backup-s3 Secret missing (gke-provision.sh openbao-backup-setup / bootstrap Layer 5). Read the Job log: kubectl -n openbao logs job/<latest openbao-snapshot job>` | quote }}
                   {{- if eq $env "gke" }}
                   # Cluster-wide Velero backups — GKE ONLY, and the gate above is
                   # load-bearing rather than tidiness.

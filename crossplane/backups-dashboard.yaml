@@ -293,16 +293,57 @@ data:
         },
         {
           "type": "row",
+          "id": 30,
+          "title": "Engine-level backups (what Velero's disk snapshot does not give you)",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+        },
+        {
+          "type": "stat",
+          "id": 31,
+          "title": "Time since last OpenBao Raft snapshot",
+          "description": "kube_cronjob_status_last_successful_time for the OpenBao Helm chart's snapshot agent (CronJob openbao/openbao-snapshot), which uploads a Raft snapshot to a dedicated bucket daily at 05:00 UTC. Same reading as the Velero tile above: an empty tile is NOT healthy — kube-state-metrics emits this series only after the CronJob has succeeded once, which is the state OpenBaoSnapshotNeverSucceeded alerts on. Instant query for the same reason as the Velero tile. Thresholds match the Velero tile: yellow past one missed run, red past 36h (OpenBaoSnapshotStale). The disk snapshot Velero takes of the openbao PVC is crash-consistent and needs the seal to open; this snapshot is the vault's own export, restorable with bao operator raft snapshot restore — nidavellir docs/secrets-management.md.",
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 19 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "time() - kube_cronjob_status_last_successful_time{namespace=\"openbao\", cronjob=\"openbao-snapshot\"}",
+              "legendFormat": "{{cronjob}}",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 90000 },
+                  { "color": "red", "value": 129600 }
+                ]
+              },
+              "noValue": "NEVER — no OpenBao snapshot on record"
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "row",
           "id": 10,
           "title": "In-cluster volume growth (what a snapshot has to copy)",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
         },
         {
           "type": "timeseries",
           "id": 11,
           "title": "Used bytes per PVC",
           "description": "Persistent-disk snapshots are incremental, so the cost driver is total provisioned data and its rate of change rather than the snapshot count. This is the closest available proxy for where a storage bill would come from, until an exporter provides real bucket metrics.",
-          "gridPos": { "h": 5, "w": 16, "x": 0, "y": 19 },
+          "gridPos": { "h": 5, "w": 16, "x": 0, "y": 25 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "targets": [
             {
@@ -318,7 +359,7 @@ data:
           "id": 12,
           "title": "Total provisioned / used",
           "description": "Capacity is what GCP bills for on a persistent disk; used is what a snapshot actually copies. A large gap means money spent on empty space.",
-          "gridPos": { "h": 5, "w": 8, "x": 16, "y": 19 },
+          "gridPos": { "h": 5, "w": 8, "x": 16, "y": 25 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "targets": [
             {
