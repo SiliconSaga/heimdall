@@ -80,6 +80,8 @@ Loki and Tempo run as StatefulSets, whose `volumeClaimTemplates` are immutable �
 
 Volumes can grow but never shrink.
 
+Step 1 needs a storage class with `allowVolumeExpansion` (check with `kubectl get storageclass`). Where it is `false` — rancher-desktop's `local-path` — the patch is rejected, and that is fine to skip: local-path is a host directory that never enforced the size, and the recreated StatefulSet adopts the existing PVC by name without comparing sizes. Steps 2 and 3 are still required.
+
 ## Sending data to Heimdall
 
 **Metrics:** Add standard Prometheus annotations or `ServiceMonitor` CRs to your
