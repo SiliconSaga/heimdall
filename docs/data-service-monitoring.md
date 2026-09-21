@@ -57,13 +57,16 @@ Group `heimdall.data-services`, defined in `crossplane/composition.yaml`.
 |---|---|---|---|
 | `HeimdallDatabaseVolumeShrank` | usage falls below half of an hour ago, for 10m | PostgreSQL data | **watched** |
 | `HeimdallVolumeCritical` | volume over 93% full, for 5m | every volume | **watched** |
-| `HeimdallVolumeFillingUp` | volume over 85% full, for 15m | every volume | quiet |
+| `HeimdallVolumeFillingUp` | volume over 85% full, for 15m | every volume | workload |
+| `HeimdallVolumeFullInFourDays` | on trend to fill within 4 days and already over 60% full, for 1h (group `heimdall.pvc-fill`) | every volume, `heimdall` included | workload |
 | `HeimdallDatabaseVolumeRecreated` | volume younger than 15 minutes, for 2m | PostgreSQL data | quiet |
 | `HeimdallDatabaseBackupFailed` | a backup Job failed within the last 24h and did not go on to complete, for 5m | `*-backup-*` and `*-snapshot-*` Jobs | quiet |
 | `OpenBaoSnapshotStale` | the `openbao-snapshot` CronJob's last success is over 36h old, for 10m | OpenBao Raft snapshots | quiet |
 | `OpenBaoSnapshotNeverSucceeded` | the `openbao-snapshot` CronJob exists but has never succeeded, for 26h | OpenBao Raft snapshots | quiet |
 
 The two OpenBao rules read kube-state-metrics' CronJob series (`kube_cronjob_status_last_successful_time`, `kube_cronjob_info`) for the OpenBao Helm chart's snapshot agent, which uploads a Raft snapshot to a dedicated bucket daily at 05:00 UTC. The second is the absent() guard: the success-time series does not exist until the first success, so staleness alone is silent on an agent that has never worked, and scoping it to the CronJob's existence keeps a cluster without the agent quiet. Neither is `watched`: the vault's data is intact and Velero's disk snapshot of the openbao PVC still runs, so a stalled upload is backup plumbing, not loss. The Backups dashboard carries a matching "time since last OpenBao Raft snapshot" tile beside Velero's.
+
+**Fill warnings are `workload`, not quiet, and get there by alert name rather than by label.** A route matching `HeimdallPVC.*|HeimdallVolume.*|KubePersistentVolume.*` lifts them, because on 2026-09-20 an 80% warning sat in the silent tier for four days while Loki's disk filled. The chart's critical inode-exhaustion alert is lifted to `watched` the same way, since a chart rule cannot be given the label.
 
 **Scope differs per rule, deliberately.** Fill applies to *every* volume outside `heimdall`, because running out of space is bad regardless of what is stored. Shrink and age match PostgreSQL data volumes by name, because the semantics only hold there — Postgres does not free large amounts of space on its own, whereas Redis rewriting an RDB or Kafka expiring segments legitimately drops usage, and alerting on those would be noise.
 

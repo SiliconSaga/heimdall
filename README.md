@@ -68,6 +68,19 @@ claim only when overriding the cluster default.
 | `lokiStorageSize` | `5Gi` | Loki PVC size |
 | `tempoStorageSize` | `5Gi` | Tempo PVC size |
 | `thanosEnabled` | `false` | Enable Thanos (not yet implemented) |
+| `logExcludeContainers` | `[]` | Containers never collected, as `<namespace>/<container>`. For noise-only containers you do not control |
+
+### Resizing a PVC
+
+Loki and Tempo run as StatefulSets, whose `volumeClaimTemplates` are immutable — bumping `lokiStorageSize` / `tempoStorageSize` alone makes the Helm upgrade fail and leaves the disk untouched. Per cluster, in this order:
+
+1. Expand the live PVC (online, no restart), where `<component>` is `loki` or `tempo` and `<size>` matches the new claim value: `kubectl -n heimdall patch pvc storage-<xr>-<component>-0 --type merge -p '{"spec":{"resources":{"requests":{"storage":"<size>"}}}}'`
+2. Orphan-delete that component's StatefulSet so the pod and PVC survive: `kubectl -n heimdall delete sts <xr>-<component> --cascade=orphan`
+3. Land the claim change. Helm recreates the StatefulSet with the new template and adopts the running pod.
+
+Volumes can grow but never shrink.
+
+Step 1 needs a storage class with `allowVolumeExpansion` (check with `kubectl get storageclass`). Where it is `false` — rancher-desktop's `local-path` — the patch is rejected, and that is fine to skip: local-path is a host directory that never enforced the size, and the recreated StatefulSet adopts the existing PVC by name without comparing sizes. Steps 2 and 3 are still required.
 
 ## Sending data to Heimdall
 
@@ -75,6 +88,8 @@ claim only when overriding the cluster default.
 deployment. Prometheus auto-scrapes based on the operator's configuration.
 
 **Logs:** Nothing to wire up. The OpenTelemetry Collector DaemonSet (deployed by the composition) tails every pod's stdout cluster-wide from `/var/log/pods` and ships it to Loki via OTLP — your workloads just need to log to stdout. Query in Grafana Explore with LogQL using the OTLP-derived labels, e.g. `{k8s_namespace_name="your-app"}` (Loki stores the OTel `k8s.namespace.name` attribute with dots replaced by underscores).
+
+Not everything is kept. Successful (2xx/3xx) access-log lines are dropped at the collector — use metrics for request rates; of access logs, only the 4xx/5xx lines reach Loki — as are containers listed in the claim's `logExcludeContainers`. Loki itself logs at `warn`.
 
 **Traces:** Point your app's OTLP exporter to:
 - gRPC: `heimdall-<id>-tempo.heimdall.svc:4317`
