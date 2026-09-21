@@ -287,6 +287,16 @@ spec:
                         # for four days and Loki went down on schedule. The
                         # critical variants carry watched="true" and so have
                         # already matched tier 4 above.
+                        #
+                        # The chart's inode rule cannot be given that label, so
+                        # its critical (<3% inodes free — as full as a volume
+                        # gets) is lifted to tier 4 by route instead.
+                        # KubePersistentVolumeErrors is deliberately NOT: it is
+                        # a provisioning fault rather than a fill, and a stuck
+                        # Pending PV would sit at tier 4 on a 1h repeat.
+                        - matchers: ['alertname = "KubePersistentVolumeInodesFillingUp"', 'severity = "critical"']
+                          receiver: ntfy-watched
+                          repeat_interval: 1h
                         - matchers: ['alertname =~ "HeimdallPVC.*|HeimdallVolume.*|KubePersistentVolume.*"']
                           receiver: ntfy-workload
                         # Tier 2 — everything else that still warrants a look.

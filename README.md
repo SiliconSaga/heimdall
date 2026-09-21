@@ -74,8 +74,8 @@ claim only when overriding the cluster default.
 
 Loki and Tempo run as StatefulSets, whose `volumeClaimTemplates` are immutable — bumping `lokiStorageSize` / `tempoStorageSize` alone makes the Helm upgrade fail and leaves the disk untouched. Per cluster, in this order:
 
-1. Expand the live PVC (online, no restart): `kubectl -n heimdall patch pvc storage-<xr>-loki-0 --type merge -p '{"spec":{"resources":{"requests":{"storage":"10Gi"}}}}'`
-2. Orphan-delete the StatefulSet so the pod and PVC survive: `kubectl -n heimdall delete sts <xr>-loki --cascade=orphan`
+1. Expand the live PVC (online, no restart), where `<component>` is `loki` or `tempo` and `<size>` matches the new claim value: `kubectl -n heimdall patch pvc storage-<xr>-<component>-0 --type merge -p '{"spec":{"resources":{"requests":{"storage":"<size>"}}}}'`
+2. Orphan-delete that component's StatefulSet so the pod and PVC survive: `kubectl -n heimdall delete sts <xr>-<component> --cascade=orphan`
 3. Land the claim change. Helm recreates the StatefulSet with the new template and adopts the running pod.
 
 Volumes can grow but never shrink.
@@ -87,7 +87,7 @@ deployment. Prometheus auto-scrapes based on the operator's configuration.
 
 **Logs:** Nothing to wire up. The OpenTelemetry Collector DaemonSet (deployed by the composition) tails every pod's stdout cluster-wide from `/var/log/pods` and ships it to Loki via OTLP — your workloads just need to log to stdout. Query in Grafana Explore with LogQL using the OTLP-derived labels, e.g. `{k8s_namespace_name="your-app"}` (Loki stores the OTel `k8s.namespace.name` attribute with dots replaced by underscores).
 
-Not everything is kept. Successful (2xx/3xx) access-log lines are dropped at the collector — use metrics for request rates, and expect only the 4xx/5xx lines in Loki — as are containers listed in the claim's `logExcludeContainers`. Loki itself logs at `warn`.
+Not everything is kept. Successful (2xx/3xx) access-log lines are dropped at the collector — use metrics for request rates; of access logs, only the 4xx/5xx lines reach Loki — as are containers listed in the claim's `logExcludeContainers`. Loki itself logs at `warn`.
 
 **Traces:** Point your app's OTLP exporter to:
 - gRPC: `heimdall-<id>-tempo.heimdall.svc:4317`
