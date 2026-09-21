@@ -376,6 +376,12 @@ spec:
                   enabled: false
                 resultsCache:
                   enabled: false
+                # Scrape Loki itself: without this its ingest and compactor
+                # metrics are invisible, and a filling disk can only be seen
+                # from the kubelet side with no way to say who is filling it.
+                monitoring:
+                  serviceMonitor:
+                    enabled: true
 
   # ──────────────────────────────────────────────────────────
   # Step 3: Tempo (Distributed Tracing)
@@ -587,6 +593,19 @@ spec:
                       annotations:
                         summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full — imminent out-of-space` | quote }}
                         description: {{ `PVC {{ $labels.persistentvolumeclaim }} is over 90% full. Expand it or reduce retentionDays.` | quote }}
+                    # Trend-based: the 2026-09-20 Loki fill was a steady
+                    # ~200MB/day climb, which a threshold only reports once
+                    # most of the runway is already gone.
+                    - alert: HeimdallPVCFullInFourDays
+                      expr: |
+                        predict_linear(kubelet_volume_stats_available_bytes{namespace="heimdall"}[2d], 4 * 24 * 3600) < 0
+                      for: 1h
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Heimdall PVC {{ $labels.persistentvolumeclaim }} will fill within 4 days` | quote }}
+                        description: {{ `PVC {{ $labels.persistentvolumeclaim }} is on trend to fill within 4 days. Expand it or find the noisy source.` | quote }}
                   # Data-service durability. The pvc-fill group above is scoped
                   # to namespace=heimdall, so database volumes in tenant
                   # namespaces had no fill alerting at all until this group.

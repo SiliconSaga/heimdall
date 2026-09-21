@@ -69,6 +69,16 @@ claim only when overriding the cluster default.
 | `tempoStorageSize` | `5Gi` | Tempo PVC size |
 | `thanosEnabled` | `false` | Enable Thanos (not yet implemented) |
 
+### Resizing a PVC
+
+Loki and Tempo run as StatefulSets, whose `volumeClaimTemplates` are immutable — bumping `lokiStorageSize` / `tempoStorageSize` alone makes the Helm upgrade fail and leaves the disk untouched. Per cluster, in this order:
+
+1. Expand the live PVC (online, no restart): `kubectl -n heimdall patch pvc storage-<xr>-loki-0 --type merge -p '{"spec":{"resources":{"requests":{"storage":"10Gi"}}}}'`
+2. Orphan-delete the StatefulSet so the pod and PVC survive: `kubectl -n heimdall delete sts <xr>-loki --cascade=orphan`
+3. Land the claim change. Helm recreates the StatefulSet with the new template and adopts the running pod.
+
+Volumes can grow but never shrink.
+
 ## Sending data to Heimdall
 
 **Metrics:** Add standard Prometheus annotations or `ServiceMonitor` CRs to your
