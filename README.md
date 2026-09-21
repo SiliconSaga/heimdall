@@ -68,6 +68,7 @@ claim only when overriding the cluster default.
 | `lokiStorageSize` | `5Gi` | Loki PVC size |
 | `tempoStorageSize` | `5Gi` | Tempo PVC size |
 | `thanosEnabled` | `false` | Enable Thanos (not yet implemented) |
+| `logExcludeContainers` | `[]` | Containers never collected, as `<namespace>/<container>`. For noise-only containers you do not control |
 
 ### Resizing a PVC
 
@@ -85,6 +86,8 @@ Volumes can grow but never shrink.
 deployment. Prometheus auto-scrapes based on the operator's configuration.
 
 **Logs:** Nothing to wire up. The OpenTelemetry Collector DaemonSet (deployed by the composition) tails every pod's stdout cluster-wide from `/var/log/pods` and ships it to Loki via OTLP — your workloads just need to log to stdout. Query in Grafana Explore with LogQL using the OTLP-derived labels, e.g. `{k8s_namespace_name="your-app"}` (Loki stores the OTel `k8s.namespace.name` attribute with dots replaced by underscores).
+
+Not everything is kept. Successful (2xx/3xx) access-log lines are dropped at the collector — use metrics for request rates, and expect only the 4xx/5xx lines in Loki — as are containers listed in the claim's `logExcludeContainers`. Loki itself logs at `warn`.
 
 **Traces:** Point your app's OTLP exporter to:
 - gRPC: `heimdall-<id>-tempo.heimdall.svc:4317`

@@ -28,3 +28,8 @@ spec:
     # first — see README "Resizing a PVC".
     lokiStorageSize: "10Gi"
     tempoStorageSize: "5Gi"
+    # The JFrog log-shipper sidecar on the legacy Artifactory has been in a
+    # failure loop since 2026-06 and logs nothing else — 730MB/day, the single
+    # largest source in Loki. Not ours to fix. A no-op where it does not run.
+    logExcludeContainers:
+      - artifactory/observability

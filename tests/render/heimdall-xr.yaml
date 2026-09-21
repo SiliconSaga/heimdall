@@ -21,3 +21,6 @@ spec:
     storageSize: "20Gi"
     lokiStorageSize: "5Gi"
     tempoStorageSize: "5Gi"
+    # Exercises the filelog exclude loop; expect one extra glob per entry.
+    logExcludeContainers:
+      - artifactory/observability
