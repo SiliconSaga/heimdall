@@ -70,6 +70,10 @@ claim only when overriding the cluster default.
 | `thanosEnabled` | `false` | Enable Thanos (not yet implemented) |
 | `logExcludeContainers` | `[]` | Containers never collected, as `<namespace>/<container>`. For noise-only containers you do not control |
 
+### Adding a claim parameter
+
+A commit that adds a field to `xrd.yaml` and sets it in `claim.yaml` wedges the ArgoCD Application on every cluster: the diff validates the claim against the *live* schema, fails, and aborts the whole sync — including the XRD that would fix it. Nothing self-heals. Apply the XRD once by hand on each cluster (`kubectl --context <ctx> apply -f crossplane/xrd.yaml`), then let auto-sync resume. Details: Nordri's `crossplane-compositions` skill.
+
 ### Resizing a PVC
 
 Loki and Tempo run as StatefulSets, whose `volumeClaimTemplates` are immutable — bumping `lokiStorageSize` / `tempoStorageSize` alone makes the Helm upgrade fail and leaves the disk untouched. Per cluster, in this order:
