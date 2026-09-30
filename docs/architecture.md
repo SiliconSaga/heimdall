@@ -66,6 +66,8 @@ Probing supplies the axis that makes severity principled rather than arbitrary:
 
 `HeimdallWatchedServiceDown` uses `for: 3m` — long enough to ride out a rolling restart or brief node blip, short enough to page within minutes.
 
+`ArgoCDApplicationUnknown` is the one internal signal promoted to `critical`, because `Unknown` is the state `Healthy` hides: when ArgoCD cannot read an Application's source (a wiped seed repository, three times over), nothing reconciles, and every Application keeps reporting the health it last computed. The series is `argocd_app_info` from ArgoCD's own application-controller metrics — off by default, turned on by nordri's `argocd` Application and scraped from `argo` by the `argocd-application-controller` ServiceMonitor this composition renders. `ArgoCDMetricsAbsent` guards the guard.
+
 ### Alert hygiene
 
 `kubeControllerManager`, `kubeScheduler`, `kubeProxy` and `kubeEtcd` are disabled at chart level. They are not scrape-exposed on **either** environment — GKE hides the managed control plane, and rancher-desktop k3s does not expose them either — so their rules fired permanently at `critical`, rendering as DND-piercing priority 5 on an hourly repeat. That noise is why the ntfy app was muted, and therefore why a genuine outage went unseen. Disabling at chart level removes rule and `ServiceMonitor` together; an inhibit rule would leave both evaluating and visible.
