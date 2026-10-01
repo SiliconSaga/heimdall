@@ -22,5 +22,14 @@ spec:
     # docs/plans/2026-05-19-heimdall-monitoring-design.md.
     retentionDays: 7
     storageSize: "20Gi"
-    lokiStorageSize: "5Gi"
+    # 5Gi → 10Gi after the 2026-09-20 GKE Loki crashloop (disk full at 7d
+    # retention). A StatefulSet's volumeClaimTemplates are immutable, so
+    # changing this needs the PVC patched and the StatefulSet orphan-deleted
+    # first — see README "Resizing a PVC".
+    lokiStorageSize: "10Gi"
     tempoStorageSize: "5Gi"
+    # The JFrog log-shipper sidecar on the legacy Artifactory has been in a
+    # failure loop since 2026-06 and logs nothing else — 730MB/day, the single
+    # largest source in Loki. Not ours to fix. A no-op where it does not run.
+    logExcludeContainers:
+      - artifactory/observability
