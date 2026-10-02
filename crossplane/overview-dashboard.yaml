@@ -677,7 +677,7 @@ data:
           "type": "barchart",
           "id": 20,
           "title": "CPU per node — requested vs used",
-          "description": "CPU requested vs actually used, per node. The gap is capacity the scheduler treats as spoken for.",
+          "description": "One bar per node, stacked to allocatable CPU: used, used beyond request, reserved but idle, free. Free space turns red when the node is cordoned.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -691,19 +691,31 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "expr": "label_replace((((sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m]))) < (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}))) or (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}))), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
               "instant": true,
               "format": "table"
             },
             {
               "refId": "B",
-              "expr": "label_replace(sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m])), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "expr": "label_replace(clamp_min((sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m]))) - on(node) (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"})), 0), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
               "instant": true,
               "format": "table"
             },
             {
               "refId": "C",
-              "expr": "label_replace(sum by (node) (kube_node_status_allocatable{resource=\"cpu\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "expr": "label_replace(clamp_min((sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"})) - on(node) (sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m]))), 0), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "D",
+              "expr": "label_replace(clamp_min((sum by (node) (kube_node_status_allocatable{resource=\"cpu\"})) - on(node) (((sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m]))) > (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}))) or (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}))), 0) and on(node) ((max by (node) (kube_node_spec_unschedulable)) == 0), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "E",
+              "expr": "label_replace(clamp_min((sum by (node) (kube_node_status_allocatable{resource=\"cpu\"})) - on(node) (((sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\", node!=\"\"}[5m]))) > (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}))) or (sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\", node!=\"\"}))), 0) and on(node) ((max by (node) (kube_node_spec_unschedulable)) == 1), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
               "instant": true,
               "format": "table"
             }
@@ -723,12 +735,16 @@ data:
                   "Time": true,
                   "Time 1": true,
                   "Time 2": true,
-                  "Time 3": true
+                  "Time 3": true,
+                  "Time 4": true,
+                  "Time 5": true
                 },
                 "renameByName": {
-                  "Value #A": "Requested",
-                  "Value #B": "Used",
-                  "Value #C": "Allocatable"
+                  "Value #A": "Used",
+                  "Value #B": "Used beyond request",
+                  "Value #C": "Reserved, idle",
+                  "Value #D": "Free",
+                  "Value #E": "Cordoned"
                 }
               }
             }
@@ -736,8 +752,8 @@ data:
           "options": {
             "orientation": "auto",
             "xTickLabelRotation": 0,
-            "showValue": "auto",
-            "stacking": "none",
+            "showValue": "never",
+            "stacking": "normal",
             "groupWidth": 0.7,
             "barWidth": 0.9,
             "legend": {
@@ -774,21 +790,6 @@ data:
               {
                 "matcher": {
                   "id": "byName",
-                  "options": "Requested"
-                },
-                "properties": [
-                  {
-                    "id": "color",
-                    "value": {
-                      "mode": "fixed",
-                      "fixedColor": "#3987e5"
-                    }
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
                   "options": "Used"
                 },
                 "properties": [
@@ -798,13 +799,55 @@ data:
                       "mode": "fixed",
                       "fixedColor": "#d95926"
                     }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 90
                   }
                 ]
               },
               {
                 "matcher": {
                   "id": "byName",
-                  "options": "Allocatable"
+                  "options": "Used beyond request"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#8f3bb8"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 90
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Reserved, idle"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#3987e5"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 90
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Free"
                 },
                 "properties": [
                   {
@@ -819,6 +862,25 @@ data:
                     "value": 15
                   }
                 ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Cordoned"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#a3212f"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 100
+                  }
+                ]
               }
             ]
           }
@@ -827,7 +889,7 @@ data:
           "type": "barchart",
           "id": 21,
           "title": "Memory per node — requested vs used",
-          "description": "Memory requested vs actually used, per node. Unlike CPU, an under-set memory request ends in OOMKilled.",
+          "description": "One bar per node, stacked to allocatable memory: used, used beyond request, reserved but idle, free. Free space turns red when the node is cordoned. Memory used beyond request is what gets OOMKilled first.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -841,19 +903,31 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "expr": "label_replace((((sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"})) < (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}))) or (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}))), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
               "instant": true,
               "format": "table"
             },
             {
               "refId": "B",
-              "expr": "label_replace(sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "expr": "label_replace(clamp_min((sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"})) - on(node) (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"})), 0), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
               "instant": true,
               "format": "table"
             },
             {
               "refId": "C",
-              "expr": "label_replace(sum by (node) (kube_node_status_allocatable{resource=\"memory\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "expr": "label_replace(clamp_min((sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"})) - on(node) (sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"})), 0), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "D",
+              "expr": "label_replace(clamp_min((sum by (node) (kube_node_status_allocatable{resource=\"memory\"})) - on(node) (((sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"})) > (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}))) or (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}))), 0) and on(node) ((max by (node) (kube_node_spec_unschedulable)) == 0), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "E",
+              "expr": "label_replace(clamp_min((sum by (node) (kube_node_status_allocatable{resource=\"memory\"})) - on(node) (((sum by (node) (container_memory_working_set_bytes{container!=\"\", node!=\"\"})) > (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}))) or (sum by (node) (kube_pod_container_resource_requests{resource=\"memory\", node!=\"\"}))), 0) and on(node) ((max by (node) (kube_node_spec_unschedulable)) == 1), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
               "instant": true,
               "format": "table"
             }
@@ -873,12 +947,16 @@ data:
                   "Time": true,
                   "Time 1": true,
                   "Time 2": true,
-                  "Time 3": true
+                  "Time 3": true,
+                  "Time 4": true,
+                  "Time 5": true
                 },
                 "renameByName": {
-                  "Value #A": "Requested",
-                  "Value #B": "Used",
-                  "Value #C": "Allocatable"
+                  "Value #A": "Used",
+                  "Value #B": "Used beyond request",
+                  "Value #C": "Reserved, idle",
+                  "Value #D": "Free",
+                  "Value #E": "Cordoned"
                 }
               }
             }
@@ -886,8 +964,8 @@ data:
           "options": {
             "orientation": "auto",
             "xTickLabelRotation": 0,
-            "showValue": "auto",
-            "stacking": "none",
+            "showValue": "never",
+            "stacking": "normal",
             "groupWidth": 0.7,
             "barWidth": 0.9,
             "legend": {
@@ -924,21 +1002,6 @@ data:
               {
                 "matcher": {
                   "id": "byName",
-                  "options": "Requested"
-                },
-                "properties": [
-                  {
-                    "id": "color",
-                    "value": {
-                      "mode": "fixed",
-                      "fixedColor": "#3987e5"
-                    }
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
                   "options": "Used"
                 },
                 "properties": [
@@ -948,13 +1011,55 @@ data:
                       "mode": "fixed",
                       "fixedColor": "#d95926"
                     }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 90
                   }
                 ]
               },
               {
                 "matcher": {
                   "id": "byName",
-                  "options": "Allocatable"
+                  "options": "Used beyond request"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#8f3bb8"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 90
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Reserved, idle"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#3987e5"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 90
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Free"
                 },
                 "properties": [
                   {
@@ -967,6 +1072,25 @@ data:
                   {
                     "id": "custom.fillOpacity",
                     "value": 15
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Cordoned"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#a3212f"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 100
                   }
                 ]
               }
