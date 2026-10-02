@@ -1085,6 +1085,80 @@ spec:
                       annotations:
                         summary: {{ `TLS certificate for {{ $labels.instance }} expires in under 14 days` | quote }}
                         description: {{ `Certificate renewal is not happening. Manual intervention needed before expiry.` | quote }}
+                  # ArgoCD sitting in sync status Unknown is the blind spot every
+                  # seed wipe exposed: everything reports Healthy while nothing
+                  # has reconciled (realm Forgejo day-2 design). `watched` puts it
+                  # in the paging tier. The series comes from ArgoCD's own
+                  # controller metrics, scraped by the ServiceMonitor below.
+                  - name: heimdall.argocd
+                    interval: 1m
+                    rules:
+                    - alert: ArgoCDApplicationUnknown
+                      expr: argocd_app_info{sync_status="Unknown"} == 1
+                      for: 5m
+                      labels:
+                        severity: critical
+                        component: argocd
+                        watched: "true"
+                      annotations:
+                        summary: {{ `ArgoCD Application {{ $labels.name }} has been Unknown for 5 minutes` | quote }}
+                        description: {{ `{{ $labels.name }} (project {{ $labels.project }}) reports sync status Unknown: ArgoCD cannot reach or read its source, so nothing has reconciled — and every other Application may still say Healthy. The usual cause is the seed repository being gone or wiped. Check argocd-repo-server logs and the seed Gitea.` | quote }}
+                    - alert: ArgoCDMetricsAbsent
+                      expr: absent(argocd_app_info)
+                      for: 15m
+                      labels:
+                        severity: warning
+                        component: argocd
+                      annotations:
+                        summary: "ArgoCD application metrics are not being scraped"
+                        description: "argocd_app_info has no series for 15 minutes, so ArgoCDApplicationUnknown cannot fire. Check Service argocd-application-controller-metrics in argo (controller.metrics.enabled in nordri's argocd Application) and the argocd-application-controller ServiceMonitor."
+
+  # ──────────────────────────────────────────────────────────
+  # Step 3.5b: ArgoCD controller metrics (realm Forgejo day-2 Phase 2
+  # design). nordri adopts ArgoCD under GitOps with
+  # controller.metrics.enabled, which renders Service
+  # argocd-application-controller-metrics in argo. This
+  # ServiceMonitor scrapes it for argocd_app_info — the series
+  # behind ArgoCDApplicationUnknown above. serviceMonitorSelector
+  # is empty (cluster-wide), so the release label documents intent.
+  # ──────────────────────────────────────────────────────────
+  - step: deploy-argocd-servicemonitor
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          {{- $name := .observed.composite.resource.metadata.name -}}
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: {{ $name }}-argocd-servicemonitor
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: argocd-servicemonitor
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: monitoring.coreos.com/v1
+                kind: ServiceMonitor
+                metadata:
+                  name: argocd-application-controller
+                  namespace: heimdall
+                  labels:
+                    release: {{ $name }}-kube-prometheus
+                    app.kubernetes.io/part-of: heimdall
+                spec:
+                  namespaceSelector:
+                    matchNames: [argo]
+                  selector:
+                    matchLabels:
+                      app.kubernetes.io/name: argocd-metrics
+                      app.kubernetes.io/component: application-controller
+                  endpoints:
+                    - port: http-metrics
+                      interval: 30s
 
   # ──────────────────────────────────────────────────────────
   # Step 3.6: Blackbox Exporter — black-box service probing

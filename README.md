@@ -136,6 +136,8 @@ Alerts come with it automatically, no extra wiring:
 | `HeimdallCertExpiringSoon` | TLS cert expires within 14 days | warning |
 | `HeimdallProbeScrapeFailing` | Prometheus can't reach the exporter | **critical** |
 | `HeimdallProbePipelineDown` | No probe series exist at all | **critical** |
+| `ArgoCDApplicationUnknown` | An ArgoCD Application has sync status Unknown for 5 minutes — nothing is reconciling while everything else still says Healthy | **critical**, `watched` (tier 4) |
+| `ArgoCDMetricsAbsent` | `argocd_app_info` has no series for 15 minutes, so the rule above cannot fire | warning |
 
 ### Opting in to critical
 
