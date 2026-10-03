@@ -597,7 +597,7 @@ data:
           "type": "timeseries",
           "id": 52,
           "title": "CPU pressure per node",
-          "description": "Seconds per second that containers wait for CPU, per allocatable core. Healthy nodes sit well under 0.5; above 2 for 10 minutes raises HeimdallNodeCPUStarved.",
+          "description": "Seconds per second that containers wait for CPU, per core. Healthy nodes sit well under 0.5; above 2 for 10 minutes raises HeimdallNodeCPUStarved.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -611,8 +611,8 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(sum by (node) (rate(container_pressure_cpu_waiting_seconds_total{container!=\"\"}[5m])) / on (node) sum by (node) (kube_node_status_allocatable{resource=\"cpu\"}), \"node\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
-              "legendFormat": "{{node}}"
+              "expr": "label_replace(sum by (node) (rate(container_pressure_cpu_waiting_seconds_total{container!=\"\"}[5m])) / on (node) max by (node) (machine_cpu_cores), \"short\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "legendFormat": "{{short}}"
             }
           ],
           "options": {

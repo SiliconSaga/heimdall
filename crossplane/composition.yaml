@@ -1095,15 +1095,19 @@ spec:
                   # kubelet's per-container PSI rather than node-exporter, which
                   # is often the first thing to die on such a node (2026-10-02:
                   # a runaway gke-metrics-agent; this was the only clean signal).
-                  # Per allocatable core so the threshold survives node resizes.
-                  # Over a week, >2 was crossed only by that incident.
+                  # Per core so the threshold survives node resizes. The core
+                  # count is the kubelet's own machine_cpu_cores, not
+                  # kube-state-metrics' allocatable: KSM is itself a restart
+                  # victim on a starved node, and its series vanishing would
+                  # silence the rule. Over a week, >2 was crossed only by that
+                  # incident.
                   - name: heimdall.nodes
                     interval: 1m
                     rules:
                     - alert: HeimdallNodeCPUStarved
                       expr: |
                         sum by (node) (rate(container_pressure_cpu_waiting_seconds_total{container!=""}[10m]))
-                          / on (node) sum by (node) (kube_node_status_allocatable{resource="cpu"})
+                          / on (node) max by (node) (machine_cpu_cores)
                           > 2
                       for: 10m
                       labels:
