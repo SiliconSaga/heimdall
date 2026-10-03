@@ -299,6 +299,11 @@ spec:
                           repeat_interval: 1h
                         - matchers: ['alertname =~ "HeimdallPVC.*|HeimdallVolume.*|KubePersistentVolume.*"']
                           receiver: ntfy-workload
+                        # Also tier 3 — a CPU-starved node. Not capacity chatter:
+                        # on 2026-10-02 it restarted both shared databases for
+                        # hours while the only node alerts sat silently in tier 2.
+                        - matchers: ['alertname = "HeimdallNodeCPUStarved"']
+                          receiver: ntfy-workload
                         # Tier 2 — everything else that still warrants a look.
                         # info/none severities keep falling through to 'null'
                         # (Watchdog, InfoInhibitor) so they never reach the phone.
@@ -1085,6 +1090,32 @@ spec:
                       annotations:
                         summary: {{ `TLS certificate for {{ $labels.instance }} expires in under 14 days` | quote }}
                         description: {{ `Certificate renewal is not happening. Manual intervention needed before expiry.` | quote }}
+                  # A CPU-starved node takes every workload on it down through
+                  # probe timeouts, whatever is doing the starving. Read from the
+                  # kubelet's per-container PSI rather than node-exporter, which
+                  # is often the first thing to die on such a node (2026-10-02:
+                  # a runaway gke-metrics-agent; this was the only clean signal).
+                  # Per core so the threshold survives node resizes. The core
+                  # count is the kubelet's own machine_cpu_cores, not
+                  # kube-state-metrics' allocatable: KSM is itself a restart
+                  # victim on a starved node, and its series vanishing would
+                  # silence the rule. Over a week, >2 was crossed only by that
+                  # incident.
+                  - name: heimdall.nodes
+                    interval: 1m
+                    rules:
+                    - alert: HeimdallNodeCPUStarved
+                      expr: |
+                        sum by (node) (rate(container_pressure_cpu_waiting_seconds_total{container!=""}[10m]))
+                          / on (node) max by (node) (machine_cpu_cores)
+                          > 2
+                      for: 10m
+                      labels:
+                        severity: warning
+                        component: heimdall
+                      annotations:
+                        summary: {{ `Node {{ $labels.node }} is starved for CPU` | quote }}
+                        description: {{ `Containers on {{ $labels.node }} wait {{ $value | humanize }}s per second per core for CPU; probes will start timing out. Compare node CPU with the sum of its pods: a gap points at kubelet, containerd or a kube-system agent.` | quote }}
                   # ArgoCD sitting in sync status Unknown is the blind spot every
                   # seed wipe exposed: everything reports Healthy while nothing
                   # has reconciled (realm Forgejo day-2 design). `watched` puts it

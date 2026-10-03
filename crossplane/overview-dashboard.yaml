@@ -446,7 +446,7 @@ data:
           },
           "gridPos": {
             "h": 6,
-            "w": 12,
+            "w": 6,
             "x": 8,
             "y": 7
           },
@@ -591,6 +591,72 @@ data:
                 ]
               }
             ]
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 52,
+          "title": "CPU pressure per node",
+          "description": "Seconds per second that containers wait for CPU, per core. Healthy nodes sit well under 0.5; above 2 for 10 minutes raises HeimdallNodeCPUStarved.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 14,
+            "y": 7
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(sum by (node) (rate(container_pressure_cpu_waiting_seconds_total{container!=\"\"}[5m])) / on (node) max by (node) (machine_cpu_cores), \"short\", \"$1\", \"node\", \".*-(\\\\w+)$\")",
+              "legendFormat": "{{short}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 2,
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "thresholdsStyle": {
+                  "mode": "line"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "transparent",
+                    "value": null
+                  },
+                  {
+                    "color": "#d03b3b",
+                    "value": 2
+                  }
+                ]
+              }
+            },
+            "overrides": []
           }
         },
         {
