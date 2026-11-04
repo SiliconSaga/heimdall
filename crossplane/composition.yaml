@@ -897,7 +897,28 @@ spec:
                     # nothing, and homelab's Postgres is deliberately test data.
                     # If GKE's data ever warrants paging, the per-env gate used by
                     # heimdall.velero below is the pattern to copy.
-                    - alert: HeimdallDatabaseBackupStale
+                    #
+                    # ⚠ POSTGRES ONLY, and named that way on purpose. The
+                    # obvious generalisation is actively wrong here, so it is
+                    # worth saying why rather than leaving the next person to
+                    # discover it.
+                    #
+                    # Percona's PXC operator names its backup Jobs
+                    # `xb-cron-<cluster>-<storage>-<ts>` (measured on GKE:
+                    # xb-cron-mimir-mysql-gcs-20261142043-1crhc), which matches
+                    # neither the `-backup-` pattern below nor anything else
+                    # Postgres-shaped. Widening the regex to catch them would
+                    # then break on the join: `max by (namespace)` would take the
+                    # NEWEST backup of either engine, so mimir's daily Postgres
+                    # backup would hold the series fresh while MySQL quietly
+                    # stopped — a false negative, which is strictly worse than
+                    # the honest gap of not covering it.
+                    #
+                    # MySQL staleness therefore wants its own pair of rules with
+                    # its own job regex and `-pxc$` statefulset scope, not a
+                    # wider version of these. It matters on GKE, where the MySQL
+                    # GCS schedule is the offsite copy.
+                    - alert: HeimdallPostgresBackupStale
                       # The `and on (namespace)` is the whole reason this rule is
                       # safe to run un-gated in every realm, and it is doing
                       # something the velero gate below could not.
@@ -937,7 +958,7 @@ spec:
                     # `for: 26h` so a freshly provisioned cluster stays silent
                     # through its first scheduled backup, same reasoning as
                     # OpenBaoSnapshotNeverSucceeded.
-                    - alert: HeimdallDatabaseBackupNeverCompleted
+                    - alert: HeimdallPostgresBackupNeverCompleted
                       expr: |
                         max by (namespace) (kube_statefulset_status_replicas_ready{statefulset=~".+-instance1-.+"}) > 0
                         unless on (namespace) max by (namespace) (kube_job_status_completion_time{job_name=~".+-backup-.+"})
