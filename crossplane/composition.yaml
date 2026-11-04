@@ -858,6 +858,96 @@ spec:
                       annotations:
                         summary: {{ `OpenBao snapshot CronJob has never succeeded` | quote }}
                         description: {{ `openbao-snapshot exists but no run has completed in its first day. The usual causes are the openbao-backup role missing in OpenBao (nordri openbao-configure.sh) or the openbao-backup-s3 Secret missing (gke-provision.sh openbao-backup-setup / bootstrap Layer 5). Read the Job log: kubectl -n openbao logs job/<latest openbao-snapshot job>` | quote }}
+                    # ── Database backup STALENESS, which is a different
+                    # question from database backup FAILURE (2026-11-04) ──
+                    #
+                    # HeimdallDatabaseBackupFailed above watches
+                    # kube_job_status_failed inside a 24h window. That window is
+                    # there for a good reason — an unscoped failed-pod counter
+                    # fires forever and gets silenced — but it means the rule can
+                    # only ever see a schedule that is still PRODUCING Jobs. It is
+                    # structurally blind to a schedule that has stopped producing
+                    # them at all, and that is the failure mode that actually
+                    # happened.
+                    #
+                    # Measured, on homelab: mimir-postgres's last successful
+                    # backup Job completed 2026-09-23. On 2026-10-01 a manual
+                    # backup to the then-unreachable repo2 wedged in state
+                    # `Starting` and kept the operator's
+                    # `pgv2.percona.com/backup-in-progress` annotation held. The
+                    # Percona operator serialises manual backups, so every
+                    # scheduled PerconaPGBackup after it sat at state `<none>` and
+                    # no Job was ever created. BackupFailed fired once for the
+                    # 10-01 Job, went quiet when its 24h window closed, and then
+                    # 42 days passed with no backups and no alert.
+                    #
+                    # pgBackRest actively reassures you here: `pgbackrest info`
+                    # reported `status: ok` throughout, because the stanza WAS
+                    # healthy and the WAL archive WAS current. Only the backups
+                    # had stopped. "Last backup succeeded" is the only question
+                    # whose answer could not be faked by a healthy stanza.
+                    #
+                    # 48h, not 36h as OpenBao uses for its daily snapshot: the
+                    # operator's own Job creation can lag, and a differential
+                    # chain survives one missed day. Two missed days means the
+                    # schedule itself has stopped, which is the signal.
+                    #
+                    # Warning and NOT `watched`, matching OpenBaoSnapshotStale:
+                    # this is a slow burn where a day of human latency costs
+                    # nothing, and homelab's Postgres is deliberately test data.
+                    # If GKE's data ever warrants paging, the per-env gate used by
+                    # heimdall.velero below is the pattern to copy.
+                    - alert: HeimdallDatabaseBackupStale
+                      # The `and on (namespace)` is the whole reason this rule is
+                      # safe to run un-gated in every realm, and it is doing
+                      # something the velero gate below could not.
+                      #
+                      # Scoping by "does this namespace currently run a Postgres
+                      # instance" comes from INSIDE the expression, so the rule
+                      # needs no realm list and cannot rot as realms are added.
+                      # It also kills the false positive that a naive age check
+                      # walks straight into: namespace `keycloak` still carries a
+                      # completed `keycloak-postgres-backup-n2p5` Job from
+                      # 2026-07-09, 119 days stale, for a Postgres cluster that no
+                      # longer exists. An orphaned Job object keeps emitting
+                      # kube_job_status_completion_time forever, so without the
+                      # join this rule would alert permanently about a database
+                      # nobody runs — the "cannot tell broken from deliberately
+                      # not configured" trap called out in the Velero notes.
+                      #
+                      # `-instance1-` is the Percona PG operator's StatefulSet
+                      # naming (mimir-postgres-instance1-q2mz). Validated against
+                      # both live realms: one series on homelab at 42.6 days,
+                      # empty on GKE where backups are current.
+                      expr: |
+                        time() - max by (namespace) (kube_job_status_completion_time{job_name=~".+-backup-.+"}) > 172800
+                        and on (namespace) max by (namespace) (kube_statefulset_status_replicas_ready{statefulset=~".+-instance1-.+"}) > 0
+                      for: 30m
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Postgres backups in {{ $labels.namespace }} have stalled` | quote }}
+                        description: {{ `The newest completed backup Job in {{ $labels.namespace }} finished {{ $value | humanizeDuration }} ago against a daily schedule. pgBackRest will still report status ok while this is true, because the stanza stays healthy and only the backups stopped. The known cause is a PerconaPGBackup wedged in state Starting holding the operator's backup-in-progress annotation, which blocks every later scheduled backup: kubectl -n {{ $labels.namespace }} get pg-backup` | quote }}
+                    # The absent() sibling, and the one that covers a cluster
+                    # whose Job history has been pruned away entirely — at which
+                    # point the staleness rule above has no series left to read
+                    # and goes quiet exactly when it matters most.
+                    #
+                    # `for: 26h` so a freshly provisioned cluster stays silent
+                    # through its first scheduled backup, same reasoning as
+                    # OpenBaoSnapshotNeverSucceeded.
+                    - alert: HeimdallDatabaseBackupNeverCompleted
+                      expr: |
+                        max by (namespace) (kube_statefulset_status_replicas_ready{statefulset=~".+-instance1-.+"}) > 0
+                        unless on (namespace) max by (namespace) (kube_job_status_completion_time{job_name=~".+-backup-.+"})
+                      for: 26h
+                      labels:
+                        severity: warning
+                        component: data-services
+                      annotations:
+                        summary: {{ `Postgres in {{ $labels.namespace }} has no completed backup` | quote }}
+                        description: {{ `A Postgres instance is running in {{ $labels.namespace }} but no completed backup Job is visible, for over a day. Either none has ever succeeded or the Job history was pruned, and both mean there is no recent restore point to read. Check the backup objects and the operator log: kubectl -n {{ $labels.namespace }} get pg-backup` | quote }}
                   {{- if eq $env "gke" }}
                   # Cluster-wide Velero backups — GKE ONLY, and the gate above is
                   # load-bearing rather than tidiness.
